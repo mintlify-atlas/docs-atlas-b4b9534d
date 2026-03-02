@@ -1,0 +1,127 @@
+{
+  "projectType": "saas",
+  "projectName": "Entendi",
+  "projectDescription": "Comprehension accountability layer for AI-assisted work that ensures developers understand what they build.",
+  "theme": "palm",
+  "primaryColor": "#6366F1",
+  "lightColor": "#818CF8",
+  "darkColor": "#4F46E5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "how-it-works",
+              "philosophy"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "installation",
+              "quickstart",
+              "authentication"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/concept-detection",
+              "features/comprehension-probing",
+              "features/socratic-tutoring",
+              "features/mastery-tracking"
+            ]
+          },
+          {
+            "group": "Dashboard",
+            "pages": [
+              "dashboard/overview",
+              "dashboard/knowledge-graph",
+              "dashboard/analytics",
+              "dashboard/history"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/architecture",
+              "advanced/bayesian-model",
+              "advanced/development",
+              "advanced/deployment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "MCP Tools",
+            "pages": [
+              "api/mcp/overview",
+              "api/mcp/observe",
+              "api/mcp/record-evaluation",
+              "api/mcp/tutor",
+              "api/mcp/status"
+            ]
+          },
+          {
+            "group": "HTTP API",
+            "pages": [
+              "api/http/authentication",
+              "api/http/concepts",
+              "api/http/mastery",
+              "api/http/events",
+              "api/http/analytics"
+            ]
+          },
+          {
+            "group": "Core Modules",
+            "pages": [
+              "api/core/probabilistic-model",
+              "api/core/probe-engine",
+              "api/core/tutor-engine",
+              "api/core/knowledge-graph"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time concept detection during Claude Code sessions",
+    "Bayesian mastery tracking with Graded Response Model",
+    "Socratic tutoring for knowledge gaps",
+    "Knowledge graph with prerequisite propagation",
+    "Spaced repetition scheduling via FSRS algorithm",
+    "Web dashboard with mastery analytics and history",
+    "MCP server integration for Claude Code",
+    "Multi-language AST-based concept extraction"
+  ],
+  "publicApiSurface": [
+    "entendi_observe",
+    "entendi_record_evaluation",
+    "entendi_start_tutor",
+    "entendi_advance_tutor",
+    "entendi_dismiss",
+    "entendi_get_status",
+    "entendi_get_zpd_frontier",
+    "entendi_login",
+    "POST /api/concepts",
+    "GET /api/mastery",
+    "POST /api/mcp/observe",
+    "POST /api/mcp/record-evaluation",
+    "GET /api/events",
+    "GET /api/analytics/snapshot",
+    "bayesianUpdate",
+    "grmUpdate",
+    "generateProbe",
+    "evaluateResponse",
+    "KnowledgeGraph",
+    "StateManager"
+  ]
+}
