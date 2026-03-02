@@ -1,0 +1,101 @@
+---
+title: Dashboard Overview
+description: Navigate your personal knowledge graph and track your learning progress
+---
+
+The Entendi dashboard is your central hub for viewing mastery data, exploring concepts, and analyzing your learning patterns. Access it at [entendi.dev](https://entendi.dev) after signing in.
+
+## Getting Started
+
+### Authentication
+
+Sign in using:
+- **GitHub** or **Google** (OAuth)
+- **Email and password** (create an account or sign in)
+
+Once authenticated, your dashboard loads your personal knowledge graph and assessment history.
+
+## Main Navigation
+
+The dashboard uses a tabbed interface with six primary sections:
+
+### Overview
+
+Your learning snapshot, featuring:
+
+- **Strongest Concepts**: Top 3 concepts by mastery percentage, with visual progress bars
+- **Needs Attention**: Bottom 3 concepts requiring review
+- **Recent Activity**: Timeline of your latest 15 assessments across all concepts
+
+Each concept card shows:
+- Mastery percentage with color-coded bar (red < 30%, amber 30-60%, green > 60%)
+- Time since last assessment
+- Click to navigate to detailed concept view
+
+### Analytics
+
+Comprehensive learning metrics:
+
+- **Activity Heatmap**: Calendar visualization showing assessment frequency over the past year
+- **Learning Velocity**: Cumulative mastery gain over time
+- **Domain Strengths**: Radar chart comparing mastery across knowledge domains (e.g., security, networking, programming)
+- **Review Needed**: Concepts predicted to decay based on memory models
+
+See [Analytics](/dashboard/analytics) for detailed explanations.
+
+### Concepts
+
+Browse all concepts you've been assessed on:
+
+- **Filter by domain**: View concepts grouped by domain (security, cloud, testing, etc.)
+- **Sortable table**: Concept name, mastery percentage with confidence range, confidence level (High/Med/Low), assessment count
+- **Search functionality**: Find specific concepts quickly
+- **Click any concept** to open detailed timeline, prerequisites, and assessment history
+
+Learn more in [Knowledge Graph](/dashboard/knowledge-graph).
+
+### Integrity
+
+Monitor response authenticity:
+
+- **Integrity Trend**: Chart showing integrity scores over time
+- **Flagged Responses**: List of assessments that triggered behavioral anomaly detection
+
+Entendi uses biometric analysis (typing speed, vocabulary complexity, response patterns) to detect potential AI-assisted responses.
+
+### Organization
+
+If you belong to an organization:
+
+- View organization members and their mastery profiles
+- Access team-wide analytics
+- Manage enforcement settings (admins only)
+
+### Settings
+
+- **API Keys**: Generate and manage API keys for programmatic access
+- **Account Management**: Update profile, change password, delete account
+- **Preferences**: Configure notification settings
+
+## Real-Time Updates
+
+The dashboard connects via Server-Sent Events (SSE) to receive live updates when:
+- New assessments complete
+- Mastery scores update
+- Probes are queued
+
+Data refreshes automatically without requiring page reload.
+
+## Accessibility
+
+- Full keyboard navigation (arrow keys to switch tabs, Tab to navigate elements)
+- ARIA labels and semantic HTML for screen readers
+- Progress bars with `role="progressbar"` and `aria-valuenow` attributes
+
+## Performance
+
+The dashboard uses:
+- **Stale-while-revalidate caching**: Instant loads from sessionStorage, background refresh
+- **Skeleton screens**: Visual placeholders while data loads
+- **Lazy rendering**: Charts only render when tabs are activated
+- **Content hashing**: Assets cached with CDN-friendly filenames

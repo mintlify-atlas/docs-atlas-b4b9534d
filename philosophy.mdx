@@ -1,0 +1,176 @@
+---
+title: Philosophy
+description: Why comprehension accountability matters for AI-assisted work
+---
+
+## The comprehension gap
+
+Software engineering with LLMs has created a dangerous asymmetry: the speed of production has decoupled from the speed of learning.
+
+### Before LLMs
+
+Learning and building were the same activity. You couldn't ship a Bayesian update function without understanding Bayes' theorem. You couldn't deploy a CI pipeline without learning how containers work. The friction of implementation *was* the learning process.
+
+### With LLMs
+
+Code assistants compress weeks of learning into seconds of generation:
+
+- A junior developer asks for "OAuth flow with refresh tokens" and gets production-ready code
+- A researcher prompts "implement Graded Response Model" and receives a complete psychometric system
+- A founder requests "deploy to Cloudflare Workers" and their app is live
+
+The code works. The deployment succeeds. But the human didn't learn.
+
+<Warning>
+  **The problem isn't that the code is bad.** The problem is that the person who shipped it can't debug it, extend it, or explain how it works.
+</Warning>
+
+## Why this matters
+
+### Technical debt isn't just in the code
+
+When you ship code you don't understand:
+
+1. **You can't debug it** - When the OAuth flow breaks in production, you're back to prompting the LLM
+2. **You can't extend it** - Adding features requires guessing or generating new code you also don't understand
+3. **You can't make trade-offs** - You don't know *why* the GRM uses Fisher information vs. random sampling
+4. **You can't teach others** - Your knowledge graph has gaps where the LLM filled in
+
+### The learning curve inverts
+
+Traditionally, you learned *before* you could build. Now:
+
+- You build first (with LLM assistance)
+- Learning becomes optional
+- Understanding happens only when things break (if at all)
+
+This creates **learned helplessness**: you become dependent on the LLM for every change, every bug, every decision.
+
+### Expertise stops compounding
+
+Software expertise is built through:
+
+1. **Pattern recognition** - Seeing the same problems in different contexts
+2. **Mental models** - Understanding *why* solutions work
+3. **Debugging intuition** - Knowing where to look when things break
+
+When the LLM does the implementation, you skip all three. You ship code, but you don't build expertise.
+
+<Note>
+  **Expertise compounds.** Every bug you debug makes you better at debugging. Every design pattern you implement makes you better at recognizing when to use it. LLM-assisted work without comprehension accountability breaks this compounding.
+</Note>
+
+## The wrong solutions
+
+### "Just slow down"
+
+Telling people to reject LLM assistance is like telling drivers to reject GPS because it prevents them from learning to read maps. The productivity gains are real. The efficiency is valuable. Slowing down isn't the answer.
+
+### "Just study the generated code"
+
+This assumes:
+- You know *what* to study (which concepts matter)
+- You have time to study everything the LLM generates
+- You can identify gaps in your understanding without external feedback
+
+In practice, people ship the code and move on. Studying happens only when something breaks.
+
+### "Just ask the LLM to explain"
+
+LLM explanations are passive. You read them, nod, and assume you understand. There's no feedback loop. No validation. No way to know if you *actually* learned or just *felt* like you did.
+
+## The right solution: comprehension accountability
+
+Entendi treats learning as a **first-class concern** in the development workflow:
+
+1. **Don't slow down the AI** - Let Claude complete your request at full speed
+2. **Track what you're building** - Detect technical concepts from code and conversation
+3. **Check understanding** - Probe whether you know the concepts (Bayesian-informed, not random)
+4. **Teach when needed** - Socratic tutoring for concepts you don't understand
+5. **Measure mastery over time** - Spaced repetition and memory modeling
+
+### Key principles
+
+<AccordionGroup>
+  <Accordion title="Learning should be automatic, not manual">
+    You shouldn't have to remember to study. The system should detect when you're using concepts you don't understand and intervene automatically.
+    
+    Entendi runs as a plugin - no extra steps, no context switching, no manual tracking.
+  </Accordion>
+  
+  <Accordion title="Feedback should be immediate, not delayed">
+    Waiting until something breaks to learn is too late. By then, you've shipped multiple features built on shaky foundations.
+    
+    Entendi probes your understanding *right after* Claude completes your request - when the context is fresh and the concept is relevant.
+  </Accordion>
+  
+  <Accordion title="Assessment should be Bayesian, not exhaustive">
+    You can't quiz every concept in every session. The system needs to prioritize:
+    - Novel concepts (never seen before)
+    - Critical concepts (security, correctness)
+    - Forgotten concepts (memory decay)
+    
+    Entendi uses Fisher information and novelty classification to probe the concepts where assessment provides the most information gain.
+  </Accordion>
+  
+  <Accordion title="Teaching should be Socratic, not didactic">
+    Passive explanations don't work. You need to:
+    - Articulate your understanding (phase 1: assess)
+    - Engage with guidance (phase 2: guide)
+    - Confront misconceptions (phase 3: correct)
+    - Demonstrate mastery (phase 4: verify)
+    
+    Entendi's four-phase tutor adapts to your responses, addressing specific gaps and misconceptions.
+  </Accordion>
+  
+  <Accordion title="Mastery should compound, not reset">
+    Every assessment updates your knowledge graph:
+    - Bayesian mastery tracking (Graded Response Model)
+    - Memory stability modeling (FSRS-4.5)
+    - Prerequisite awareness (Zone of Proximal Development)
+    
+    Your learning compounds. The system gets smarter about when to probe and when to let you work.
+  </Accordion>
+</AccordionGroup>
+
+## What comprehension accountability enables
+
+### Ship fast *and* learn fast
+
+You get the productivity of LLM-assisted development without the knowledge debt. Build at AI speed, learn at human speed, ship with confidence.
+
+### Develop true expertise
+
+Every probed concept strengthens your mental models. Every tutoring session fills gaps. Over time, you need the LLM less for *understanding* and more for *implementation*.
+
+### Debug with confidence
+
+When something breaks, you understand the system well enough to diagnose the problem. You're not guessing. You're not prompting blindly. You know what's happening.
+
+### Make informed trade-offs
+
+You can evaluate different approaches because you understand the underlying concepts. You know *why* GRM uses Fisher information. You know *why* V8 isolates affect Node.js API availability.
+
+### Teach others
+
+Your knowledge graph is complete. You can onboard teammates, review code meaningfully, and explain design decisions.
+
+## The outcome: sustainable AI-assisted development
+
+Comprehension accountability transforms LLM-assisted development from:
+
+**Extractive** (taking code without learning) → **Generative** (building expertise while shipping)
+
+**Dependent** (can't work without the LLM) → **Augmented** (using the LLM as a force multiplier)
+
+**Fragile** (breaks when patterns change) → **Robust** (adapts because you understand principles)
+
+<Card title="Get started" icon="rocket" href="/installation">
+  Install Entendi and start building comprehension accountability into your workflow
+</Card>
+
+## Related reading
+
+- [How it works](/how-it-works) - Technical details of the five-stage pipeline
+- [Installation](/installation) - Get started in minutes
+- [Dashboard](/dashboard) - Track your knowledge graph over time

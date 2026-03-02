@@ -1,0 +1,441 @@
+---
+title: "Knowledge Graph"
+description: "Concept graph with per-user mastery tracking and ZPD frontier computation"
+---
+
+The `KnowledgeGraph` class manages a graph of concepts with relationships and tracks per-user mastery states. It provides methods for novelty classification, ZPD (Zone of Proximal Development) frontier computation, and state persistence.
+
+## Constructor
+
+### new KnowledgeGraph
+
+Create a new knowledge graph instance.
+
+<ParamField path="state" type="KnowledgeGraphState">
+  Optional initial state. If not provided, creates an empty graph.
+</ParamField>
+
+```typescript knowledge-graph.ts
+import { KnowledgeGraph, createEmptyGraphState } from '@entendi/core';
+
+// Empty graph
+const graph = new KnowledgeGraph();
+
+// From existing state
+const state = createEmptyGraphState();
+const graph2 = new KnowledgeGraph(state);
+
+// From JSON
+const json = '{"concepts":{},"userStates":{}}';
+const graph3 = KnowledgeGraph.fromJSON(json);
+```
+
+## Concept Methods
+
+### addConcept
+
+Add a concept node to the graph.
+
+<ParamField path="concept" type="ConceptNode" required>
+  Concept node to add (will overwrite if `conceptId` already exists)
+</ParamField>
+
+```typescript knowledge-graph.ts
+import { KnowledgeGraph, createConceptNode } from '@entendi/core';
+
+const graph = new KnowledgeGraph();
+
+const reactHooks = createConceptNode({
+  conceptId: 'react_hooks',
+  domain: 'frontend',
+  specificity: 'technique',
+  aliases: ['React Hooks', 'useState', 'useEffect'],
+  relationships: [
+    { target: 'react_components', type: 'requires' },
+    { target: 'javascript_closures', type: 'requires' }
+  ]
+});
+
+graph.addConcept(reactHooks);
+```
+
+### getConcept
+
+Retrieve a concept by ID.
+
+<ParamField path="conceptId" type="string" required>
+  Concept ID to retrieve
+</ParamField>
+
+<ResponseField name="ConceptNode | undefined" type="object">
+  Concept node, or undefined if not found
+</ResponseField>
+
+```typescript knowledge-graph.ts
+const concept = graph.getConcept('react_hooks');
+if (concept) {
+  console.log(concept.aliases); // ['React Hooks', 'useState', 'useEffect']
+  console.log(concept.relationships); // [...]
+}
+```
+
+### getAllConcepts
+
+Get all concepts in the graph.
+
+<ResponseField name="ConceptNode[]" type="array">
+  Array of all concept nodes
+</ResponseField>
+
+```typescript knowledge-graph.ts
+const all = graph.getAllConcepts();
+console.log(`Graph contains ${all.length} concepts`);
+
+for (const concept of all) {
+  console.log(`${concept.conceptId} (${concept.specificity})`);
+}
+```
+
+## User State Methods
+
+### getUserConceptState
+
+Get the mastery state for a user+concept pair. Creates initial state if it doesn't exist.
+
+<ParamField path="userId" type="string" required>
+  User ID
+</ParamField>
+
+<ParamField path="conceptId" type="string" required>
+  Concept ID
+</ParamField>
+
+<ResponseField name="UserConceptState" type="object">
+  User's mastery state for this concept (created if missing)
+</ResponseField>
+
+```typescript knowledge-graph.ts
+const state = graph.getUserConceptState('user123', 'react_hooks');
+console.log(state.mastery); // { mu: 0.0, sigma: 1.5 } (initial)
+console.log(state.assessmentCount); // 0
+```
+
+### setUserConceptState
+
+Update the mastery state for a user+concept pair.
+
+<ParamField path="userId" type="string" required>
+  User ID
+</ParamField>
+
+<ParamField path="conceptId" type="string" required>
+  Concept ID
+</ParamField>
+
+<ParamField path="ucs" type="UserConceptState" required>
+  Updated user concept state (history is auto-capped at 50 events)
+</ParamField>
+
+```typescript knowledge-graph.ts
+import { bayesianUpdate } from '@entendi/core';
+
+const state = graph.getUserConceptState('user123', 'react_hooks');
+state.mastery = bayesianUpdate(state.mastery, 2);
+state.assessmentCount++;
+state.lastAssessed = new Date().toISOString();
+
+graph.setUserConceptState('user123', 'react_hooks', state);
+```
+
+## Novelty Classification
+
+### classifyNovelty
+
+Classify how novel a concept is for a user based on mastery and retrievability.
+
+<ParamField path="userId" type="string" required>
+  User ID
+</ParamField>
+
+<ParamField path="conceptId" type="string" required>
+  Concept ID
+</ParamField>
+
+<ResponseField name="NoveltyLevel" type="string">
+  One of: 'critical', 'novel', 'adjacent', 'routine'
+</ResponseField>
+
+```typescript knowledge-graph.ts
+import { KnowledgeGraph } from '@entendi/core';
+
+const graph = new KnowledgeGraph();
+
+// Security concepts are always 'critical'
+const novelty1 = graph.classifyNovelty('user123', 'oauth2_client_credentials');
+console.log(novelty1); // 'critical' (if domain === 'security')
+
+// Otherwise based on mastery + retrievability
+const novelty2 = graph.classifyNovelty('user123', 'react_hooks');
+// 'novel' if assessmentCount === 0
+// 'routine' if pMastery > 0.8 && R > 0.7
+// 'adjacent' if pMastery > 0.3
+// 'novel' otherwise
+```
+
+**Novelty Rules:**
+
+| Level | Condition |
+|-------|----------|
+| `critical` | Concept domain is 'security' |
+| `novel` | Never assessed (assessmentCount = 0) or pMastery ≤ 0.3 |
+| `adjacent` | pMastery > 0.3 but not routine |
+| `routine` | pMastery > 0.8 AND retrievability > 0.7 |
+
+## Zone of Proximal Development (ZPD)
+
+### getZPDFrontier
+
+Compute the ZPD frontier: concepts where all prerequisites are mastered but the concept itself is not.
+
+<ParamField path="userId" type="string" required>
+  User ID
+</ParamField>
+
+<ParamField path="options" type="object">
+  <Expandable title="properties">
+    <ParamField path="threshold" type="number">
+      Mastery threshold for "mastered" (default: 0.7)
+    </ParamField>
+    <ParamField path="limit" type="number">
+      Maximum number of concepts to return (default: 20)
+    </ParamField>
+    <ParamField path="includeUnassessed" type="boolean">
+      Include concepts never assessed (default: false)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="string[]" type="array">
+  Array of concept IDs in the frontier, sorted by Fisher information (descending)
+</ResponseField>
+
+```typescript knowledge-graph.ts
+import { KnowledgeGraph } from '@entendi/core';
+
+const graph = new KnowledgeGraph();
+
+// Get ZPD frontier (top 10 concepts to learn next)
+const frontier = graph.getZPDFrontier('user123', {
+  threshold: 0.7,
+  limit: 10,
+  includeUnassessed: false
+});
+
+console.log('Concepts ready to learn:');
+for (const conceptId of frontier) {
+  const concept = graph.getConcept(conceptId);
+  const state = graph.getUserConceptState('user123', conceptId);
+  console.log(`- ${conceptId}: mastery=${state.mastery.mu.toFixed(2)}`);
+}
+```
+
+**ZPD Rules:**
+
+1. Exclude concepts already mastered (pMastery ≥ threshold)
+2. Exclude unassessed concepts unless `includeUnassessed: true`
+3. Include concepts with no prerequisites
+4. Include concepts where all `requires` relationships point to mastered concepts
+5. Sort by Fisher information (descending) — prioritizes concepts where assessment is most informative
+6. Assessed concepts ranked before unassessed
+
+## Serialization
+
+### toJSON
+
+Serialize the graph to JSON string.
+
+<ResponseField name="string" type="string">
+  JSON representation of the graph state
+</ResponseField>
+
+```typescript knowledge-graph.ts
+const json = graph.toJSON();
+console.log(json);
+// {
+//   "concepts": { ... },
+//   "userStates": { ... }
+// }
+```
+
+### fromJSON (static)
+
+Deserialize a graph from JSON string.
+
+<ParamField path="json" type="string" required>
+  JSON string representing graph state
+</ParamField>
+
+<ResponseField name="KnowledgeGraph" type="object">
+  Deserialized graph instance
+</ResponseField>
+
+```typescript knowledge-graph.ts
+const json = '{"concepts":{...},"userStates":{...}}';
+const graph = KnowledgeGraph.fromJSON(json);
+```
+
+### getState
+
+Get the raw internal state object.
+
+<ResponseField name="KnowledgeGraphState" type="object">
+  Internal state (concepts + userStates)
+</ResponseField>
+
+```typescript knowledge-graph.ts
+const state = graph.getState();
+console.log(Object.keys(state.concepts).length); // concept count
+console.log(Object.keys(state.userStates).length); // user-concept state count
+```
+
+## Type Definitions
+
+```typescript types.ts
+export interface KnowledgeGraphState {
+  concepts: Record<string, ConceptNode>;
+  userStates: Record<string, UserConceptState>; // key: "userId:conceptId"
+}
+
+export interface ConceptNode {
+  conceptId: string;
+  aliases: string[];
+  domain: string;
+  specificity: ConceptSpecificity;
+  parentConcept: string | null;
+  itemParams: GRMItemParams;
+  relationships: ConceptEdge[];
+  lifecycle: ConceptLifecycle;
+  populationStats: PopulationStats;
+}
+
+export interface ConceptEdge {
+  target: string;
+  type: EdgeType;
+}
+
+export type EdgeType = 'requires' | 'part_of' | 'related_to' | 'alternative_to' | 'used_with' | 'is_example_of';
+
+export type ConceptSpecificity = 'domain' | 'topic' | 'technique';
+
+export type ConceptLifecycle = 'discovered' | 'candidate' | 'normalized' | 'validated' | 'stable' | 'deprecated';
+
+export interface UserConceptState {
+  conceptId: string;
+  userId: string;
+  mastery: MasteryState;
+  memory: MemoryState;
+  lastAssessed: string | null;
+  assessmentCount: number;
+  history: AssessmentEvent[];
+  tutoredAssessmentCount: number;
+  untutoredAssessmentCount: number;
+  muUntutored: number;
+  sigmaUntutored: number;
+}
+
+export type NoveltyLevel = 'routine' | 'adjacent' | 'novel' | 'critical';
+```
+
+## Complete Example
+
+```typescript example.ts
+import {
+  KnowledgeGraph,
+  createConceptNode,
+  bayesianUpdate,
+  retrievability,
+  pMastery
+} from '@entendi/core';
+
+// 1. Build a concept graph
+const graph = new KnowledgeGraph();
+
+const jsClosures = createConceptNode({
+  conceptId: 'javascript_closures',
+  domain: 'programming',
+  specificity: 'technique',
+  aliases: ['closures', 'lexical scope']
+});
+
+const reactHooks = createConceptNode({
+  conceptId: 'react_hooks',
+  domain: 'frontend',
+  specificity: 'technique',
+  aliases: ['React Hooks', 'useState', 'useEffect'],
+  relationships: [
+    { target: 'javascript_closures', type: 'requires' }
+  ]
+});
+
+const reactContext = createConceptNode({
+  conceptId: 'react_context',
+  domain: 'frontend',
+  specificity: 'technique',
+  aliases: ['Context API', 'useContext'],
+  relationships: [
+    { target: 'react_hooks', type: 'requires' }
+  ]
+});
+
+graph.addConcept(jsClosures);
+graph.addConcept(reactHooks);
+graph.addConcept(reactContext);
+
+// 2. Track user mastery
+const userId = 'user123';
+
+// User masters closures
+let state1 = graph.getUserConceptState(userId, 'javascript_closures');
+state1.mastery = bayesianUpdate(state1.mastery, 3); // deep understanding
+state1.assessmentCount = 1;
+state1.lastAssessed = new Date().toISOString();
+graph.setUserConceptState(userId, 'javascript_closures', state1);
+
+// User has partial mastery of React hooks
+let state2 = graph.getUserConceptState(userId, 'react_hooks');
+state2.mastery = bayesianUpdate(state2.mastery, 2); // functional
+state2.assessmentCount = 1;
+state2.lastAssessed = new Date().toISOString();
+graph.setUserConceptState(userId, 'react_hooks', state2);
+
+// 3. Classify novelty
+const novelty = graph.classifyNovelty(userId, 'react_context');
+console.log(`React Context is ${novelty} for user`); // 'novel' (not yet assessed)
+
+// 4. Compute ZPD frontier
+const frontier = graph.getZPDFrontier(userId, { limit: 5 });
+console.log('Ready to learn:', frontier);
+// ['react_context'] — prerequisites (react_hooks) are met
+
+// 5. Check mastery probability
+const hooksState = graph.getUserConceptState(userId, 'react_hooks');
+const pm = pMastery(hooksState.mastery.mu);
+console.log(`React Hooks mastery: ${(pm * 100).toFixed(1)}%`);
+
+// 6. Serialize for persistence
+const json = graph.toJSON();
+console.log('Saved:', json.length, 'bytes');
+
+// 7. Restore from JSON
+const restored = KnowledgeGraph.fromJSON(json);
+const restoredState = restored.getUserConceptState(userId, 'react_hooks');
+console.log('Restored mastery:', restoredState.mastery);
+```
+
+## Implementation Notes
+
+- **User states are keyed by `userId:conceptId`** to support multi-user graphs
+- **History is auto-capped at 50 events** in `setUserConceptState` to prevent unbounded growth
+- **ZPD frontier is sorted by Fisher information** to prioritize most informative assessments
+- **Security domain concepts always return 'critical' novelty** regardless of mastery
+- **Empty dependency arrays are treated as "no prerequisites"** (foundational concepts)

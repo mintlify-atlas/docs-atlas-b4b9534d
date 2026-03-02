@@ -1,0 +1,160 @@
+---
+title: MCP Server Overview
+description: Introduction to Entendi's Model Context Protocol (MCP) server and available tools
+---
+
+## Introduction
+
+Entendi provides a comprehensive MCP server that enables AI assistants to track concept mastery, issue comprehension probes, and provide adaptive tutoring. The server implements the [Model Context Protocol](https://modelcontextprotocol.io) for seamless integration with Claude Code and other MCP-compatible clients.
+
+## Architecture
+
+```
+Claude Code ──► MCP Server (stdio) ──► HTTP API (Hono) ──► Neon PostgreSQL
+```
+
+The MCP server acts as a bridge between your AI assistant and Entendi's backend:
+- **Transport**: stdio (standard input/output)
+- **Authentication**: API key-based (stored in `~/.entendi/config.json`)
+- **State Management**: Delegated to the production API
+- **Resilience**: Built-in retry logic, circuit breaker, and response caching
+
+## Available Tools
+
+### Core Tools (Require Authentication)
+
+<CardGroup cols={2}>
+  <Card title="entendi_observe" icon="eye" href="/api/mcp/observe">
+    Detect concepts and determine if a comprehension probe is appropriate
+  </Card>
+  <Card title="entendi_record_evaluation" icon="clipboard-check" href="/api/mcp/record-evaluation">
+    Record probe or tutor responses with Bayesian scoring
+  </Card>
+  <Card title="entendi_start_tutor" icon="graduation-cap" href="/api/mcp/tutor">
+    Start a 4-phase Socratic tutor session
+  </Card>
+  <Card title="entendi_advance_tutor" icon="arrow-right" href="/api/mcp/tutor">
+    Advance tutor session to the next phase
+  </Card>
+  <Card title="entendi_get_status" icon="chart-line" href="/api/mcp/status">
+    Query mastery state for concepts
+  </Card>
+  <Card title="entendi_get_zpd_frontier" icon="compass" href="/api/mcp/status">
+    Get concepts the user is ready to learn next
+  </Card>
+  <Card title="entendi_dismiss" icon="times-circle" href="/api/mcp/status">
+    Dismiss pending probes or tutor sessions
+  </Card>
+</CardGroup>
+
+### Utility Tools (Always Available)
+
+<CardGroup cols={2}>
+  <Card title="entendi_login" icon="key">
+    Link device to Entendi account via browser-based OAuth flow
+  </Card>
+  <Card title="entendi_health_check" icon="heartbeat">
+    Check system health: API reachability, auth validity, database connectivity
+  </Card>
+</CardGroup>
+
+## Authentication Flow
+
+<Steps>
+  <Step title="Initial Login">
+    Call `entendi_login` without parameters to generate a device code and open browser
+  </Step>
+  <Step title="Browser Confirmation">
+    Sign in to Entendi and confirm device link
+  </Step>
+  <Step title="Retrieve API Key">
+    Call `entendi_login` again with the device code to poll for confirmation and save API key
+  </Step>
+  <Step title="Auto-Configuration">
+    API key is saved to `~/.entendi/config.json` and loaded automatically on server restart
+  </Step>
+</Steps>
+
+## Error Handling
+
+All MCP tools return user-friendly error messages wrapped by `wrapToolError()`. Common scenarios:
+
+| Error Type | User Message |
+|------------|-------------|
+| Circuit breaker open | "Entendi is temporarily unavailable. Your work continues normally — concept tracking will resume automatically." |
+| Network failures | "Can't reach the Entendi API right now. This doesn't affect your work." |
+| Expired session (401/403) | "Your Entendi session has expired. Run `entendi_login` to re-authenticate." |
+| Rate limit (429) | "Rate limit reached. Try again later." |
+| Server errors (5xx) | "Entendi server error. Your work continues normally." |
+| Expired probe token | "This probe has expired. A new one will be issued next time." |
+
+## Resilience Features
+
+### Circuit Breaker
+
+Protects against cascading failures:
+- **Threshold**: 5 consecutive failures
+- **Cooldown**: 30 seconds before half-open probe
+- **States**: `closed` → `open` → `half-open` → `closed`
+
+### Retry Logic
+
+Automatic exponential backoff with jitter:
+- **Max retries**: 3 attempts
+- **Base delay**: 1000ms
+- **Jitter**: ±25%
+- **Retryable codes**: 429 (rate limit), 5xx (server errors)
+
+### Response Caching
+
+Read-only endpoints cached for 60 seconds:
+- `entendi_get_status`
+- `entendi_get_zpd_frontier`
+
+Cache invalidated automatically after write operations.
+
+## Logging
+
+All MCP operations logged to `~/.entendi/debug.log`:
+
+```
+[2026-03-02T10:15:23.456Z] [mcp] tool:entendi_observe called {"concepts":[{"id":"redis/caching","source":"package"}],...}
+[2026-03-02T10:15:23.789Z] [api-client] POST /api/mcp/observe {"body":{"concepts":[...]}}
+[2026-03-02T10:15:24.012Z] [api-client] POST /api/mcp/observe OK {"status":200,"elapsed":223,...}
+```
+
+## Configuration
+
+### Environment Variables
+
+<ParamField path="ENTENDI_API_URL" type="string" default="https://api.entendi.dev">
+  API base URL (use `http://localhost:3456` for local development)
+</ParamField>
+
+### Config File Format
+
+`~/.entendi/config.json`:
+
+```json
+{
+  "apiUrl": "https://api.entendi.dev",
+  "apiKey": "ent_live_abc123..."
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Observe Tool" icon="eye" href="/api/mcp/observe">
+    Learn how to detect concepts and trigger probes
+  </Card>
+  <Card title="Record Evaluation" icon="clipboard-check" href="/api/mcp/record-evaluation">
+    Update mastery scores with Bayesian inference
+  </Card>
+  <Card title="Tutor Tools" icon="graduation-cap" href="/api/mcp/tutor">
+    Implement adaptive Socratic tutoring
+  </Card>
+  <Card title="Status Tools" icon="chart-line" href="/api/mcp/status">
+    Query mastery state and learning frontiers
+  </Card>
+</CardGroup>

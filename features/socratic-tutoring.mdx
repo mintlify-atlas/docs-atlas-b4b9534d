@@ -1,0 +1,395 @@
+---
+title: Socratic Tutoring
+description: The 4-phase tutor system for guided learning and misconception correction
+---
+
+When a user scores low on a comprehension probe (typically 0 or 1), Entendi offers a **Socratic tutor session** to help them develop genuine understanding through guided discovery.
+
+## Tutor Architecture
+
+The tutor operates in four sequential phases, each with a distinct pedagogical goal:
+
+```typescript
+type TutorPhase = 'offered' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'complete';
+```
+
+**Phase progression:**
+
+```
+offered → phase1 → phase2 → phase3 → phase4 → complete
+```
+
+## Tutor Session State
+
+**Implementation:** [`src/schemas/types.ts`](/workspace/source/src/schemas/types.ts:218-244)
+
+```typescript
+export interface TutorSession {
+  sessionId: string;
+  conceptId: string;
+  phase: TutorPhase;
+  startedAt: string;
+  lastActivityAt: string;
+  triggerProbeScore: RubricScore | null;  // Score that triggered tutoring
+  exchanges: TutorExchange[];             // Full conversation history
+  phase1Score: RubricScore | null;        // Baseline assessment score
+  phase4Score: RubricScore | null;        // Final assessment score
+  lastMisconception: string | null;       // Detected misconception if any
+}
+
+export interface TutorExchange {
+  phase: TutorPhase;
+  question: string;      // Tutor's question
+  response: string | null; // User's response (null if awaiting answer)
+}
+```
+
+## Shared System Instruction
+
+All tutor phases use a consistent system message:
+
+**Implementation:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:14-24)
+
+```typescript
+const TUTOR_SYSTEM = `You are a Socratic tutor helping a developer deepen their understanding of a concept they encountered during AI-assisted coding. Your goal is to guide them toward genuine comprehension through dialogue, not to lecture.
+
+Guidelines:
+- Ask one focused question at a time
+- Build on the learner's previous answers
+- If you detect a misconception, note it but guide toward correction rather than stating the answer directly
+- Keep questions concise (1-2 sentences)
+- Respond with a single JSON object (no markdown, no extra text):
+{"question": "Your question here", "misconceptionDetected": "description of misconception" | null}`;
+```
+
+## Phase 1: Review
+
+**Goal:** Assess what the learner already knows before guided discovery begins.
+
+**Prompt:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:28-48)
+
+```typescript
+export function buildPhase1Prompt(input: { conceptName: string; triggerContext: string }): string {
+  const { conceptName, triggerContext } = input;
+
+  return `${TUTOR_SYSTEM}
+
+## Phase: Review (Phase 1)
+Assess what the learner already knows about this concept before guided discovery begins.
+
+## Concept
+${conceptName}
+
+## Trigger Context
+The learner was observed doing the following:
+${triggerContext}
+
+## Instructions
+Ask the learner what they already know about ${conceptName}. The question should be open-ended and invite them to share their existing understanding. This is a diagnostic question to establish a baseline.
+
+## Output Format
+Respond with a single JSON object:
+{"question": "What do you already know about ...?", "misconceptionDetected": null}`;
+}
+```
+
+**Typical question:** "What do you already know about [concept]?"
+
+**After the user responds:** The system evaluates their Phase 1 answer using the same 0-3 rubric as comprehension probes. This score is stored as `phase1Score` and establishes the baseline.
+
+## Phase 2: Guided Discovery
+
+**Goal:** Push the learner toward deeper understanding by identifying gaps and asking questions that lead to discovery.
+
+**Prompt:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:50-81)
+
+```typescript
+export function buildPhase2Prompt(input: { conceptName: string; exchanges: TutorExchangeInput[] }): string {
+  const { conceptName, exchanges } = input;
+
+  let prompt = `${TUTOR_SYSTEM}
+
+## Phase: Guided Discovery (Phase 2)
+Based on the learner's Phase 1 response, push them toward deeper understanding through guided discovery. Identify gaps or shallow areas in their knowledge and ask a question that helps them discover the deeper principle themselves.
+
+## Concept
+${conceptName}
+
+## Conversation So Far
+`;
+
+  for (const ex of exchanges) {
+    prompt += `[${ex.phase}] Q: ${ex.question}\n`;
+    if (ex.response !== null) {
+      prompt += `[${ex.phase}] A: ${ex.response}\n`;
+    }
+  }
+
+  prompt += `
+## Instructions
+Based on the learner's answers so far, identify the most important gap or shallow area in their understanding. Ask a question that guides them toward discovering a deeper principle or connection. Do not lecture; lead them to the insight through questioning.
+
+## Output Format
+Respond with a single JSON object:
+{"question": "...", "misconceptionDetected": "..." | null}`;
+
+  return prompt;
+}
+```
+
+**Key feature:** The prompt includes the full conversation history (all previous exchanges), allowing the tutor to build on prior answers and detect patterns in the learner's understanding.
+
+**Typical questions:**
+
+- "Why do you think [mechanism] works that way?"
+- "What would happen if [condition] changed?"
+- "How does this relate to [related concept]?"
+
+## Phase 3: Rectification
+
+**Goal:** Correct misconceptions through Socratic questioning, or deepen understanding further if no misconception was detected.
+
+**Prompt:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:83-132)
+
+```typescript
+export function buildPhase3Prompt(input: { conceptName: string; exchanges: TutorExchangeInput[]; misconception?: string }): string {
+  const { conceptName, exchanges, misconception } = input;
+
+  let prompt = `${TUTOR_SYSTEM}
+
+## Phase: Rectification (Phase 3)
+`;
+
+  if (misconception) {
+    prompt += `A misconception has been detected: "${misconception}"
+Correct this misconception through Socratic questioning. Do not state the correct answer directly; instead, ask a question that exposes the flaw in the learner's reasoning and guides them toward the correct understanding.
+
+`;
+  } else {
+    prompt += `No specific misconception was detected. Deepen the learner's understanding further by probing an area they haven't fully explored yet.
+
+`;
+  }
+
+  prompt += `## Concept
+${conceptName}
+
+## Conversation So Far
+`;
+
+  for (const ex of exchanges) {
+    prompt += `[${ex.phase}] Q: ${ex.question}\n`;
+    if (ex.response !== null) {
+      prompt += `[${ex.phase}] A: ${ex.response}\n`;
+    }
+  }
+
+  prompt += `
+## Instructions
+`;
+
+  if (misconception) {
+    prompt += `The learner holds this misconception: "${misconception}". Ask a question that helps them see why this belief is incorrect. Use a counterexample, edge case, or consequence of their incorrect reasoning to guide them toward rectification.`;
+  } else {
+    prompt += `Push the learner to explore a deeper aspect of ${conceptName} that they haven't addressed yet. Ask about trade-offs, edge cases, or connections to related concepts.`;
+  }
+
+  prompt += `
+
+## Output Format
+Respond with a single JSON object:
+{"question": "...", "misconceptionDetected": "..." | null}`;
+
+  return prompt;
+}
+```
+
+**Two modes:**
+
+### Misconception detected
+
+If Phase 2 (or earlier phases) detected a misconception, Phase 3 focuses on correcting it:
+
+**Typical questions:**
+
+- "If that were true, what would happen when [edge case]?"
+- "Can you think of a scenario where [misconception] would break down?"
+- "How does that square with [contradictory evidence]?"
+
+### No misconception
+
+If no misconception was detected, Phase 3 deepens understanding:
+
+**Typical questions:**
+
+- "What are the trade-offs of using this approach?"
+- "When would you choose [alternative] instead?"
+- "How does this connect to [related concept]?"
+
+## Phase 4: Consolidation
+
+**Goal:** Summative assessment — ask the learner to explain the full picture in their own words.
+
+**Prompt:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:134-164)
+
+```typescript
+export function buildPhase4Prompt(input: { conceptName: string; exchanges: TutorExchangeInput[] }): string {
+  const { conceptName, exchanges } = input;
+
+  let prompt = `${TUTOR_SYSTEM}
+
+## Phase: Consolidation (Phase 4)
+This is the final phase. Ask the learner to explain the full picture of what they now understand. This is a summative assessment question.
+
+## Concept
+${conceptName}
+
+## Conversation So Far
+`;
+
+  for (const ex of exchanges) {
+    prompt += `[${ex.phase}] Q: ${ex.question}\n`;
+    if (ex.response !== null) {
+      prompt += `[${ex.phase}] A: ${ex.response}\n`;
+    }
+  }
+
+  prompt += `
+## Instructions
+Ask the learner to explain the full picture of ${conceptName} in their own words, integrating what they've learned through this dialogue. The question should invite a comprehensive explanation that demonstrates consolidated understanding.
+
+## Output Format
+Respond with a single JSON object:
+{"question": "Can you now explain the full picture of ...?", "misconceptionDetected": null}`;
+
+  return prompt;
+}
+```
+
+**Typical questions:**
+
+- "Can you now explain the full picture of [concept]?"
+- "How would you describe [concept] to another developer?"
+- "What's the key insight you've gained about [concept]?"
+
+**After the user responds:** The system evaluates their Phase 4 answer using the 0-3 rubric. This score is stored as `phase4Score` and represents the post-tutoring mastery level.
+
+## Response Parsing
+
+All phases return the same structured output:
+
+```typescript
+export interface ParsedTutorResponse {
+  question: string;
+  misconceptionDetected: string | null;
+}
+```
+
+**Implementation:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:176-200)
+
+```typescript
+export function parseTutorResponse(raw: string): ParsedTutorResponse {
+  const cleaned = extractJsonFromMarkdown(raw);
+
+  try {
+    const parsed = JSON.parse(cleaned);
+
+    const question = typeof parsed.question === 'string' && parsed.question.length > 0
+      ? parsed.question
+      : 'Can you explain this concept in your own words?';
+
+    const misconceptionDetected = typeof parsed.misconceptionDetected === 'string'
+      ? parsed.misconceptionDetected
+      : null;
+
+    return { question, misconceptionDetected };
+  } catch {
+    // Fallback: try to extract a question from the raw text
+    const questionMatch = raw.match(/["']?question["']?\s*:\s*["']([^"']+)["']/);
+    const question = questionMatch
+      ? questionMatch[1]
+      : 'Can you explain this concept in your own words?';
+
+    return { question, misconceptionDetected: null };
+  }
+}
+```
+
+## API Call
+
+**Implementation:** [`src/core/tutor-engine.ts`](/workspace/source/src/core/tutor-engine.ts:217-230)
+
+```typescript
+export async function generateTutorQuestion(prompt: string): Promise<ParsedTutorResponse> {
+  const client = await getClient();
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((block) => block.type === 'text');
+  const raw = textBlock ? textBlock.text : '';
+
+  return parseTutorResponse(raw);
+}
+```
+
+**Model used:** `claude-haiku-4-5-20251001` with 400 max tokens (slightly higher than probes to allow for more nuanced questions).
+
+## Tutor Research
+
+Before starting a tutor session, the system can research the concept to ensure accurate teaching:
+
+**From the skill documentation:**
+
+> Before starting a tutor session with `entendi_start_tutor`, self-evaluate whether you have sufficient knowledge about the concept to teach it effectively. If you are uncertain or the concept is niche/specialized:
+>
+> 1. Research the concept using web search or Context7 documentation lookup
+> 2. When calling `entendi_start_tutor`, pass `researchPerformed: true` and `sources: [...]` (array of URLs or document references consulted)
+>
+> This ensures the tutor session is grounded in accurate, up-to-date information rather than potentially stale training data.
+
+## MCP Tools
+
+**Start tutor:**
+
+```
+entendi_start_tutor
+  conceptId: string
+  triggerContext: string
+  researchPerformed?: boolean
+  sources?: string[]
+```
+
+**Advance to next phase:**
+
+```
+entendi_advance_tutor
+  sessionId: string
+  userResponse: string
+```
+
+The `entendi_advance_tutor` tool handles:
+
+1. Recording the user's response to the current phase question
+2. Evaluating the response (Phase 1 and Phase 4 are scored)
+3. Generating the next phase question
+4. Returning the new question to the user
+
+## Learning Gain
+
+The tutor tracks learning gain by comparing Phase 1 and Phase 4 scores:
+
+```
+learningGain = phase4Score - phase1Score
+```
+
+**Possible outcomes:**
+
+- **Positive gain** (e.g., 1 → 3): Significant improvement
+- **No gain** (e.g., 1 → 1): Persistent confusion or misconception
+- **Negative gain** (e.g., 2 → 1): Rare, indicates destabilization of prior knowledge
+
+This gain metric informs the mastery model and helps identify which concepts require additional intervention.

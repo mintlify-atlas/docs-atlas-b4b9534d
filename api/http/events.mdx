@@ -1,0 +1,272 @@
+---
+title: Events
+description: Real-time assessment events via Server-Sent Events
+---
+
+<Note>
+  All event endpoints require authentication.
+</Note>
+
+The events API provides real-time streaming of assessment updates using Server-Sent Events (SSE). This enables live dashboards and monitoring of learning progress across an organization.
+
+## Stream Assessment Events
+
+Open a Server-Sent Events stream to receive real-time mastery updates for the authenticated user and their organization members.
+
+```bash GET /api/events
+curl https://api.entendi.dev/api/events?token=your_api_key_here \
+  -H "Accept: text/event-stream"
+```
+
+### Query Parameters
+
+<ParamField query="token" type="string">
+  API key for authentication (required for EventSource, which cannot set headers)
+</ParamField>
+
+### Headers
+
+<ParamField header="Last-Event-ID" type="string">
+  Resume from a specific event ID (for reconnection after disconnect)
+</ParamField>
+
+### Event Stream Format
+
+The endpoint streams events in SSE format:
+
+```
+event: connected
+data: {"retry":3000}
+
+event: mastery_update
+id: 12345
+data: {"userId":"usr_abc123","conceptId":"python-list-comprehensions","eventType":"probe_response","score":3,"masteryBefore":65,"masteryAfter":78,"createdAt":"2026-03-02T10:30:00.000Z"}
+
+event: heartbeat
+data: 
+
+event: mastery_update
+id: 12346
+data: {"userId":"usr_def456","conceptId":"react-hooks","eventType":"tutor_response","score":2,"masteryBefore":45,"masteryAfter":52,"createdAt":"2026-03-02T10:31:15.000Z"}
+```
+
+### Event Types
+
+#### `connected`
+
+Sent immediately upon connection.
+
+```json
+{
+  "retry": 3000
+}
+```
+
+<ResponseField name="retry" type="number" required>
+  Recommended retry interval in milliseconds for reconnection
+</ResponseField>
+
+#### `mastery_update`
+
+Sent when a user completes an assessment.
+
+```json
+{
+  "userId": "usr_abc123",
+  "conceptId": "python-list-comprehensions",
+  "eventType": "probe_response",
+  "score": 3,
+  "masteryBefore": 65,
+  "masteryAfter": 78,
+  "createdAt": "2026-03-02T10:30:00.000Z"
+}
+```
+
+<ResponseField name="userId" type="string" required>
+  User who completed the assessment
+</ResponseField>
+
+<ResponseField name="conceptId" type="string" required>
+  Concept that was assessed
+</ResponseField>
+
+<ResponseField name="eventType" type="string" required>
+  Assessment type: `probe_response`, `tutor_response`, `teach_me_complete`
+</ResponseField>
+
+<ResponseField name="score" type="number" required>
+  Rubric score (0-4)
+</ResponseField>
+
+<ResponseField name="masteryBefore" type="number" required>
+  Mastery percentage before assessment (0-100)
+</ResponseField>
+
+<ResponseField name="masteryAfter" type="number" required>
+  Mastery percentage after assessment (0-100)
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 timestamp
+</ResponseField>
+
+#### `heartbeat`
+
+Sent every 3 seconds to keep the connection alive.
+
+```
+event: heartbeat
+data: 
+```
+
+### Connection Behavior
+
+- **Organization Scoping:** Events are streamed for the authenticated user and all members of their organization.
+- **Incremental Updates:** Use `Last-Event-ID` header to resume from a specific event ID after reconnection.
+- **Initial Catch-up:** On first connection (no `Last-Event-ID`), the stream skips to the latest event ID to avoid flooding with historical data.
+- **Connection Duration:** Each connection lasts approximately 24 seconds (8 iterations × 3 seconds), then closes gracefully. Clients should reconnect automatically.
+- **Batch Limit:** Up to 20 events are sent per polling iteration.
+
+### JavaScript Example
+
+```javascript
+const apiKey = 'your_api_key_here';
+const eventSource = new EventSource(
+  `https://api.entendi.dev/api/events?token=${apiKey}`
+);
+
+eventSource.addEventListener('connected', (e) => {
+  const data = JSON.parse(e.data);
+  console.log('Connected, retry interval:', data.retry);
+});
+
+eventSource.addEventListener('mastery_update', (e) => {
+  const update = JSON.parse(e.data);
+  console.log(`${update.userId} mastery on ${update.conceptId}: ${update.masteryBefore}% → ${update.masteryAfter}%`);
+});
+
+eventSource.addEventListener('heartbeat', () => {
+  console.log('Connection alive');
+});
+
+eventSource.onerror = (err) => {
+  console.error('SSE error:', err);
+  // Browser will auto-reconnect with Last-Event-ID
+};
+```
+
+### cURL Example
+
+```bash
+curl -N https://api.entendi.dev/api/events?token=your_api_key_here \
+  -H "Accept: text/event-stream"
+```
+
+## Get Event Detail
+
+Retrieve full details for a specific assessment event.
+
+```bash GET /api/events/:eventId
+curl https://api.entendi.dev/api/events/12345 \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+{
+  "id": 12345,
+  "conceptId": "python-list-comprehensions",
+  "conceptName": "python-list-comprehensions",
+  "domain": "programming",
+  "eventType": "probe_response",
+  "rubricScore": 3,
+  "evaluatorConfidence": 0.92,
+  "muBefore": 0.8,
+  "muAfter": 1.2,
+  "probeDepth": 2,
+  "responseText": "List comprehensions are a concise way to create lists in Python...",
+  "evaluationCriteria": "Correct explanation with examples",
+  "responseFeatures": {
+    "wordCount": 45,
+    "charCount": 280,
+    "formattingScore": 0.8,
+    "vocabComplexity": 0.6
+  },
+  "integrityScore": 0.95,
+  "tutored": false,
+  "createdAt": "2026-03-01T14:30:00.000Z"
+}
+```
+
+<ResponseField name="id" type="number" required>
+  Unique event ID
+</ResponseField>
+
+<ResponseField name="conceptId" type="string" required>
+  Concept that was assessed
+</ResponseField>
+
+<ResponseField name="domain" type="string" required>
+  Concept's domain
+</ResponseField>
+
+<ResponseField name="eventType" type="string" required>
+  Assessment type: `probe_response`, `tutor_response`, `teach_me_complete`
+</ResponseField>
+
+<ResponseField name="rubricScore" type="number" required>
+  Assessment score (0-4)
+</ResponseField>
+
+<ResponseField name="evaluatorConfidence" type="number" required>
+  Evaluator confidence (0-1)
+</ResponseField>
+
+<ResponseField name="muBefore" type="number" required>
+  Mastery mean before assessment (logit scale)
+</ResponseField>
+
+<ResponseField name="muAfter" type="number" required>
+  Mastery mean after assessment (logit scale)
+</ResponseField>
+
+<ResponseField name="probeDepth" type="number" required>
+  Probe depth (1-3)
+</ResponseField>
+
+<ResponseField name="responseText" type="string">
+  User's response text (may be null)
+</ResponseField>
+
+<ResponseField name="evaluationCriteria" type="string">
+  Criteria used to evaluate the response
+</ResponseField>
+
+<ResponseField name="responseFeatures" type="object">
+  Computed features of the user's response (word count, formatting, etc.)
+</ResponseField>
+
+<ResponseField name="integrityScore" type="number">
+  Integrity check score (0-1, higher = more authentic)
+</ResponseField>
+
+<ResponseField name="tutored" type="boolean" required>
+  Whether tutoring was active
+</ResponseField>
+
+**Error Responses:**
+
+```json
+{
+  "error": "Invalid event ID"
+}
+```
+
+```json
+{
+  "error": "Event not found"
+}
+```
+
+**Note:** Users can only access their own events. Requesting another user's event returns `404 Not found`.

@@ -1,80 +1,235 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get from zero to first probe in 5 minutes
 ---
 
-## Get started in three steps
+This guide walks you through installing Entendi, linking your account, and experiencing your first comprehension probe.
 
-Get your documentation site running locally and make your first customization.
+## Install Entendi
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Install Claude Code CLI">
+    If you don't have it already:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    npm install -g @anthropic-ai/claude-code
+    ```
+  </Step>
+
+  <Step title="Add Entendi from GitHub">
+    ```bash
+    claude plugin marketplace add https://github.com/LemonThyme/entendi
+    claude plugin install entendi
+    ```
+  </Step>
+
+  <Step title="Start Claude Code">
+    ```bash
+    claude
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    You should see Claude Code start up. The Entendi plugin is now active, but not yet authenticated.
+  </Step>
+</Steps>
 
-### Step 2: Deploy your changes
+## Link Your Account
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+Inside the Claude Code session, authenticate with Entendi:
+
+<Steps>
+  <Step title="Request login">
+    ```
+    You: entendi login
+    ```
+  </Step>
+
+  <Step title="Confirm in browser">
+    Claude will call the `entendi_login` MCP tool, which:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    1. Creates a device code (8-character alphanumeric, like `A3K7M9Q2`)
+    2. Opens your browser to `https://api.entendi.dev/link?code=A3K7M9Q2`
+    3. Shows you the code and expiry time
+    
+    **In the browser:**
+    - Sign in (or create an account if this is your first time)
+    - Click **Confirm Link**
+    - You'll see "Device linked successfully"
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Tell Claude you're done">
+    ```
+    You: I confirmed it
+    ```
+    
+    Claude will poll the device code status and retrieve your API key. The key is automatically saved to `~/.entendi/config.json`.
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Restart Claude Code">
+    Exit and restart:
+    
+    ```bash
+    # Press Ctrl+D or type "exit"
+    claude
+    ```
+    
+    The plugin will now load with full authentication.
+  </Step>
+</Steps>
 
-### Step 3: Go live
+## Your First Probe
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+Entendi watches your coding session and probes your understanding when you work with new or rusty concepts.
 
-## Next steps
+<Steps>
+  <Step title="Trigger concept detection">
+    Ask Claude to help with something technical:
+    
+    ```
+    You: Set up a Docker container for this project
+    ```
+    
+    Claude completes the request (creates a Dockerfile, docker-compose.yml, etc.).
+  </Step>
 
-Now that you have your docs running, explore these key features:
+  <Step title="Get probed">
+    After finishing, Claude asks a comprehension question:
+    
+    ```
+    Claude: [completes the Docker setup]
+    
+    🧠 Entendi — Docker Containers
+    ───────────────────────────────────────
+    What's the difference between an image and a container,
+    and why do we use docker-compose here instead of a single
+    Dockerfile?
+    ───────────────────────────────────────
+    ```
+  </Step>
+
+  <Step title="Respond naturally">
+    ```
+    You: An image is like a template, and a container is a running
+    instance of that image. We use docker-compose because it lets
+    us define multiple services and their relationships in one file.
+    ```
+    
+    Claude evaluates your response on a 0-3 rubric:
+    - **0** — No understanding
+    - **1** — Surface-level (buzzwords, no depth)
+    - **2** — Functional (can use it correctly)
+    - **3** — Deep/transferable (can explain trade-offs and alternatives)
+  </Step>
+
+  <Step title="Get feedback">
+    If you score 0-1, Claude offers a tutor session:
+    
+    ```
+    Claude: I see some gaps. Want me to walk you through it?
+    
+    You: Sure
+    
+    Claude: [starts 4-phase Socratic tutor]
+    Phase 1: What do you already know about Docker?
+    ...
+    ```
+    
+    If you score 2-3, Claude updates your mastery and moves on.
+  </Step>
+</Steps>
+
+## What Just Happened?
+
+Behind the scenes, Entendi:
+
+1. **Detected concepts** — The `UserPromptSubmit` hook extracted "docker" and "docker-compose" from your prompt
+2. **Checked mastery** — Called `entendi_observe` to query your Bayesian knowledge state for those concepts
+3. **Decided to probe** — Selected "docker" as the highest-value probe based on uncertainty and information gain
+4. **Issued a probe** — Created a signed `probeToken` with depth, criteria, and expiry
+5. **Evaluated your answer** — Scored your response and called `entendi_record_evaluation` to update your knowledge graph
+6. **Offered tutor** — Since you scored low, it triggered `entendi_start_tutor` to help you learn
+
+## Check Your Knowledge Profile
+
+View your mastery levels at [entendi.dev](https://entendi.dev):
+
+- **Mastered** — Concepts with ≥70% mastery
+- **In Progress** — Concepts you've been assessed on but not mastered
+- **ZPD Frontier** — Zone of Proximal Development: what you're ready to learn next
+
+## CLI Commands
+
+All Entendi interactions happen through natural conversation with Claude, but you can also use MCP tools directly:
+
+```
+You: Call entendi_get_status with conceptId "docker"
+```
+
+Claude will show:
+
+```json
+{
+  "concept": {
+    "mastery": 0.42,
+    "sigma": 0.8,
+    "confidenceLevel": "medium",
+    "assessmentCount": 3,
+    "lastAssessed": "2026-03-02T14:23:11.000Z",
+    "urgency": 0.65
+  }
+}
+```
+
+## Customizing Behavior
+
+Entendi adapts its intrusiveness based on your profile:
+
+- **Unknown** (0 assessments) — Direct probes for novel concepts
+- **Beginner** (avg mastery \<40%) — Direct probes for novel, woven for adjacent
+- **Intermediate** (40-75%) — Woven probes for novel and adjacent
+- **Advanced** (\>75%) — Woven probes for novel only, skips adjacent
+
+**Woven** means the probe is embedded naturally in Claude's response. **Direct** means it's explicitly marked with the 🧠 Entendi banner.
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Authentication Deep Dive" icon="shield" href="/authentication">
+    How the device code flow works
+  </Card>
+  <Card title="MCP Tools Reference" icon="wrench" href="/api/mcp/overview">
+    All available tools and their parameters
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+### "No API key found" after login
+
+Restart Claude Code:
+
+```bash
+# Exit current session (Ctrl+D)
+claude
+```
+
+The MCP server loads `~/.entendi/config.json` at startup.
+
+### Probes not appearing
+
+Check enforcement level:
+
+```
+You: Call entendi_health_check
+```
+
+If `enforcement` is `off`, probes are disabled. Contact your org admin to change it.
+
+### Login link doesn't open
+
+Manually visit:
+
+```
+https://api.entendi.dev/link?code=<your-code>
+```
+
+Replace `<your-code>` with the 8-character code shown in Claude's response.

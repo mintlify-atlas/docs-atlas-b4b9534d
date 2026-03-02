@@ -1,0 +1,334 @@
+---
+title: Concept Detection
+description: How Entendi identifies programming concepts from code and conversation
+---
+
+Entendi automatically detects technical concepts as you work, combining multiple detection strategies to build a comprehensive understanding of what you're learning and using.
+
+## Detection Pipeline
+
+Concept detection uses three complementary signals:
+
+1. **Package detection** — Detects concepts from package install commands
+2. **AST extraction** — Identifies patterns in source code using syntax tree analysis
+3. **LLM detection** — Understands concepts from natural language conversation
+
+These signals are combined and deduplicated to produce a unified set of detected concepts for each interaction.
+
+## Package Detection
+
+When you install a package, Entendi automatically infers related concepts using a curated mapping table.
+
+### Supported Package Managers
+
+The system recognizes install commands across multiple ecosystems:
+
+```typescript
+const INSTALL_PATTERNS: RegExp[] = [
+  /^npm\s+(?:install|i|add)\b/,
+  /^yarn\s+add\b/,
+  /^pnpm\s+(?:add|install)\b/,
+  /^pip3?\s+install\b/,
+  /^cargo\s+add\b/,
+  /^go\s+get\b/,
+  /^gem\s+install\b/,
+  /^composer\s+require\b/,
+];
+```
+
+### Package Parsing
+
+The parser handles real-world complexity:
+
+- Multiple packages in one command
+- Version specifiers (`redis@4.0.0`, `flask>=2.0`)
+- Scoped npm packages (`@anthropic-ai/sdk`)
+- Flags and options (`--save-dev`, `-D`, `--global`)
+
+**Example:**
+
+```bash
+npm install @anthropic-ai/sdk express redis@4.0.0 --save
+```
+
+Parses to: `['@anthropic-ai/sdk', 'express', 'redis']`
+
+### Concept Mapping
+
+Each package maps to one or more concepts with metadata:
+
+```typescript
+export interface PackageExtractedConcept extends ExtractedConcept {
+  name: string;           // Concept ID (e.g., 'redis')
+  specificity: ConceptSpecificity;  // 'domain' | 'topic' | 'technique'
+  confidence: number;     // 0-1 confidence score
+  extractionSignal: 'package';
+  domain: string;         // Domain categorization
+}
+```
+
+**Implementation:** [`src/core/concept-extraction.ts`](/workspace/source/src/core/concept-extraction.ts:159-170)
+
+```typescript
+export function extractConceptsFromPackage(packageName: string): PackageExtractedConcept[] {
+  const mappings = PACKAGE_CONCEPT_MAP[packageName];
+  if (!mappings || mappings.length === 0) return [];
+
+  return mappings.map(mapping => ({
+    name: mapping.name,
+    specificity: mapping.specificity,
+    confidence: mapping.confidence,
+    extractionSignal: 'package' as const,
+    domain: mapping.domain,
+  }));
+}
+```
+
+## AST Extraction
+
+For code changes and file edits, Entendi parses the syntax tree to detect programming patterns.
+
+### Supported Languages
+
+- **TypeScript** (`tree-sitter-typescript`)
+- **JavaScript** (`tree-sitter-javascript`)
+- **Python** (`tree-sitter-python`)
+
+### Pattern Detectors
+
+Each language has a set of AST pattern detectors that map specific node types to concepts:
+
+```typescript
+interface PatternDetector {
+  nodeTypes: string[];        // AST node types to search for
+  conceptName: string;        // Concept to emit
+  specificity: ConceptSpecificity;
+  confidence: number;         // Detection confidence
+}
+```
+
+**TypeScript/JavaScript patterns:**
+
+```typescript
+const TS_JS_DETECTORS: PatternDetector[] = [
+  {
+    nodeTypes: ['await_expression'],
+    conceptName: 'async-programming',
+    specificity: 'topic',
+    confidence: 0.9,
+  },
+  {
+    nodeTypes: ['type_parameters'],
+    conceptName: 'generics',
+    specificity: 'technique',
+    confidence: 0.9,
+  },
+  {
+    nodeTypes: ['generator_function_declaration', 'generator_function', 'yield_expression'],
+    conceptName: 'iterators-generators',
+    specificity: 'technique',
+    confidence: 0.9,
+  },
+  {
+    nodeTypes: ['try_statement'],
+    conceptName: 'error-handling',
+    specificity: 'topic',
+    confidence: 0.8,
+  },
+  {
+    nodeTypes: ['class_declaration', 'abstract_class_declaration'],
+    conceptName: 'oop',
+    specificity: 'topic',
+    confidence: 0.85,
+  },
+  {
+    nodeTypes: ['object_pattern', 'array_pattern'],
+    conceptName: 'destructuring',
+    specificity: 'technique',
+    confidence: 0.85,
+  },
+  {
+    nodeTypes: ['decorator'],
+    conceptName: 'decorators-metaprogramming',
+    specificity: 'technique',
+    confidence: 0.9,
+  },
+];
+```
+
+**Python patterns:**
+
+```typescript
+const PYTHON_DETECTORS: PatternDetector[] = [
+  {
+    nodeTypes: ['await'],
+    conceptName: 'async-programming',
+    specificity: 'topic',
+    confidence: 0.9,
+  },
+  {
+    nodeTypes: ['type_parameter'],
+    conceptName: 'generics',
+    specificity: 'technique',
+    confidence: 0.9,
+  },
+  {
+    nodeTypes: ['generator_expression', 'yield'],
+    conceptName: 'iterators-generators',
+    specificity: 'technique',
+    confidence: 0.9,
+  },
+  // ... additional patterns
+];
+```
+
+### Extraction Process
+
+**Implementation:** [`src/core/ast-extraction.ts`](/workspace/source/src/core/ast-extraction.ts:224-276)
+
+```typescript
+export async function extractConceptsFromSource(
+  source: string,
+  language: SupportedLanguage,
+): Promise<ASTExtractedConcept[]> {
+  if (!source.trim()) return [];
+
+  // Initialize tree-sitter parser
+  await initParser();
+
+  const lang = await loadLanguage(language);
+  if (!lang) return [];
+
+  const detectors = getDetectors(language);
+
+  let parser: Parser | null = null;
+  try {
+    parser = new Parser();
+    parser.setLanguage(lang);
+
+    const tree = parser.parse(source);
+    if (!tree) return [];
+
+    const root = tree.rootNode;
+    const seen = new Set<string>();
+    const results: ASTExtractedConcept[] = [];
+
+    // Search for each pattern
+    for (const detector of detectors) {
+      if (seen.has(detector.conceptName)) continue;
+
+      const matches = root.descendantsOfType(detector.nodeTypes);
+      if (matches.length > 0) {
+        seen.add(detector.conceptName);
+        results.push({
+          name: detector.conceptName,
+          specificity: detector.specificity,
+          confidence: detector.confidence,
+          extractionSignal: 'ast',
+        });
+      }
+    }
+
+    return results;
+  } catch (err) {
+    console.error(`[entendi/ast] Error parsing source as '${language}':`, err);
+    return [];
+  } finally {
+    parser?.delete();
+  }
+}
+```
+
+**Key features:**
+
+- Lazy parser initialization (shared across calls)
+- Language-specific WASM grammar loading
+- Deduplication (each concept emitted once per file)
+- Clean resource management (tree and parser cleanup)
+
+## LLM Detection
+
+The primary detection mechanism for conversational context. The concept-detection skill is injected into every Claude Code session and analyzes user messages for technical concepts.
+
+### Conservative Detection Policy
+
+The LLM only reports concepts the user **explicitly mentioned** or is **directly working with**. It does NOT infer related concepts speculatively.
+
+**From the skill documentation:**
+
+> Only pass concepts the user explicitly mentioned or is directly working with.
+> Do NOT infer related concepts speculatively. The server-side concept graph handles
+> prerequisite discovery and related concepts automatically via enrichment.
+
+**Examples:**
+
+| User says | Concepts to observe | Primary concept |
+|-----------|--------------------|-----------------|
+| "let's use thompson sampling for the A/B test" | `thompson-sampling`, `a-b-testing` | `thompson-sampling` |
+| "set up CI with GitHub Actions" | `github-actions` | `github-actions` |
+| "why is my React component re-rendering?" | `react-rendering` | `react-rendering` |
+| "add a caching layer with Redis" | `redis`, `caching` | `redis` |
+| "the p-value is 0.03, so it's significant" | `p-values`, `statistical-significance` | `p-values` |
+| "use a recursive CTE for the tree query" | `recursive-cte` | `recursive-cte` |
+
+### Primary Concept
+
+When calling `entendi_observe`, the LLM identifies which concept the user is **most directly** discussing and passes it as `primaryConceptId`. This ensures probing focuses on the most relevant concept rather than a tangentially related one with higher urgency.
+
+**Rules:**
+
+- The concept the user explicitly named or is actively working with
+- NOT inferred/related concepts — only what they're directly engaging with
+- If uncertain which is primary, omit the field (system falls back to info-gain ranking)
+
+### When to Observe
+
+- User is discussing, asking about, or making decisions involving a concept
+- User is learning something new or working with unfamiliar technology
+- User makes a claim about how something works
+
+### When NOT to Observe
+
+- Trivial messages: "yes", "ok", "commit and push", "looks good"
+- You just probed them on this concept recently in this session
+- The concept is purely conversational, not technical
+
+## Concept Specificity
+
+All detected concepts are tagged with a specificity level:
+
+```typescript
+type ConceptSpecificity = 'domain' | 'topic' | 'technique';
+```
+
+- **Domain**: Broad field (e.g., `machine-learning`, `web-development`)
+- **Topic**: Specific area within a domain (e.g., `async-programming`, `oop`)
+- **Technique**: Concrete practice or pattern (e.g., `destructuring`, `generics`)
+
+This hierarchy helps the system prioritize probing (techniques and topics are more actionable than domains).
+
+## Extraction Signals
+
+Each detected concept is tagged with its source:
+
+```typescript
+type ExtractionSignal = 'package' | 'ast' | 'llm';
+```
+
+- **package**: Detected from install command
+- **ast**: Detected from code syntax tree
+- **llm**: Detected from conversation by Claude
+
+Multiple signals for the same concept increase confidence and provide triangulation.
+
+## Integration with Probing
+
+After detection, concepts are passed to `entendi_observe`, which:
+
+1. Enriches concepts with prerequisite relationships from the knowledge graph
+2. Calculates information gain for each concept
+3. Applies spaced repetition filtering (retrievability threshold)
+4. Selects the highest-value concept for probing
+5. Returns a probe decision with `shouldProbe: true/false`
+
+See [Comprehension Probing](/features/comprehension-probing) for details on the probe selection algorithm.

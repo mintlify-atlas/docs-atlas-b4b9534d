@@ -1,0 +1,173 @@
+---
+title: Installation
+description: Install the Entendi plugin for Claude Code
+---
+
+## Prerequisites
+
+Before installing Entendi, make sure you have:
+
+- **Node.js 22+** installed ([download here](https://nodejs.org))
+- **Claude Code CLI** installed globally:
+  ```bash
+  npm install -g @anthropic-ai/claude-code
+  ```
+
+## Install from GitHub
+
+Entendi is distributed as a Claude Code plugin. Install it directly from the GitHub repository:
+
+<Steps>
+  <Step title="Add the plugin marketplace">
+    ```bash
+    claude plugin marketplace add https://github.com/LemonThyme/entendi
+    ```
+    
+    This registers the Entendi repository as a plugin source.
+  </Step>
+
+  <Step title="Install the plugin">
+    ```bash
+    claude plugin install entendi
+    ```
+    
+    Claude Code will download and install the plugin to `~/.claude/plugins/entendi/`.
+  </Step>
+
+  <Step title="Verify installation">
+    ```bash
+    claude plugin list
+    ```
+    
+    You should see `entendi` in the list of installed plugins.
+  </Step>
+</Steps>
+
+## Configuration
+
+After installation, the plugin needs to be linked to your Entendi account. See [Authentication](/authentication) for the device code login flow.
+
+The plugin stores its configuration in:
+
+```
+~/.entendi/
+├── config.json          # API key and URL
+└── debug.log            # Hook and MCP call logs
+```
+
+## What Gets Installed
+
+The Entendi plugin includes:
+
+- **MCP Server** — Provides tools like `entendi_observe`, `entendi_record_evaluation`, `entendi_start_tutor`, `entendi_dismiss`, and `entendi_login`
+- **Hooks** — `UserPromptSubmit` detects login requests, pending probes, and teach-me patterns
+- **API Client** — Communicates with the Entendi backend at `https://api.entendi.dev` (or your configured URL)
+
+## Developer Installation
+
+If you're contributing to Entendi or testing local changes:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/LemonThyme/entendi.git
+    cd entendi
+    ```
+  </Step>
+
+  <Step title="Run the setup script">
+    ```bash
+    ./setup.sh
+    ```
+    
+    This script will:
+    - Check Node.js version (requires 22+)
+    - Copy `.env.example` to `.env` if needed
+    - Validate required environment variables
+    - Install dependencies with `npm install`
+    - Build the plugin with `npm run build`
+    - Install the plugin with `claude plugin install entendi`
+  </Step>
+
+  <Step title="Configure environment">
+    Edit `.env` and fill in:
+    
+    ```bash
+    DATABASE_URL="postgresql://user:pass@host/db"
+    BETTER_AUTH_SECRET="$(openssl rand -base64 32)"
+    BETTER_AUTH_URL="http://localhost:3456"
+    ```
+  </Step>
+
+  <Step title="Reinstall after code changes">
+    ```bash
+    npm run plugin:reinstall
+    ```
+    
+    This command:
+    - Clears the plugin cache at `~/.claude/plugins/cache/entendi`
+    - Rebuilds with `npm run build`
+    - Reinstalls the plugin
+    
+    The build stamps each plugin version with the git hash, so Claude Code always picks up your latest changes.
+  </Step>
+</Steps>
+
+## Uninstalling
+
+To remove Entendi:
+
+```bash
+claude plugin uninstall entendi
+rm -rf ~/.entendi
+```
+
+This removes the plugin and all local configuration files.
+
+## Troubleshooting
+
+### Plugin not loading
+
+1. Check that Claude Code is installed:
+   ```bash
+   claude --version
+   ```
+
+2. Verify the plugin is installed:
+   ```bash
+   claude plugin list
+   ```
+
+3. Check debug logs:
+   ```bash
+   tail -f ~/.entendi/debug.log
+   ```
+
+### Node version errors
+
+If you see "Node 22+ is required" during `./setup.sh`:
+
+```bash
+node -v  # Check current version
+# Update Node.js: https://nodejs.org
+```
+
+### Permission errors
+
+If installation fails with EACCES:
+
+```bash
+sudo chown -R $(whoami) ~/.claude
+sudo chown -R $(whoami) ~/.entendi
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/authentication">
+    Link your device to your Entendi account
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get from zero to first probe in 5 minutes
+  </Card>
+</CardGroup>

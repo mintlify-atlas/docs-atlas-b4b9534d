@@ -1,0 +1,408 @@
+---
+title: Bayesian Mastery Model
+description: Mathematical foundations of GRM and FSRS algorithms for comprehension tracking
+---
+
+## Overview
+
+Entendi uses a dual-model approach to track comprehension:
+
+1. **GRM (Graded Response Model)** — Bayesian mastery estimation using Item Response Theory
+2. **FSRS (Free Spaced Repetition Scheduler)** — Memory decay and review scheduling
+
+This combination provides both **mastery** ("do you understand it?") and **memory** ("will you remember it?") tracking.
+
+## Mastery: Graded Response Model (GRM)
+
+### Theoretical Foundation
+
+The GRM is a polytomous IRT model that maps a latent ability parameter (theta, θ) to response probabilities across ordered categories.
+
+**Core Insight**: Different comprehension questions have different discriminations (how well they separate experts from novices) and thresholds (difficulty boundaries between response levels).
+
+### Mathematical Model
+
+#### Boundary Response Function
+
+For a rubric with K+1 categories (0, 1, 2, 3), the cumulative probability of responding in category k or higher is:
+
+```
+P*(k | θ) = 1 / (1 + exp(-a(θ - b_k)))
+```
+
+Where:
+- `θ` (theta) — Latent mastery parameter (real line, ~N(0, 1.5) initially)
+- `a` — Discrimination parameter (how steeply probability changes with mastery)
+- `b_k` — Threshold parameter for category boundary k
+
+**Implementation**: `src/core/probabilistic-model.ts:91-97`
+
+```typescript
+function brf(theta: number, a: number, b: [number, number, number]): [number, number, number] {
+  return [
+    logistic(a * (theta - b[0])),
+    logistic(a * (theta - b[1])),
+    logistic(a * (theta - b[2])),
+  ];
+}
+```
+
+#### Category Probabilities
+
+The probability of responding exactly in category k is the difference between consecutive cumulative probabilities:
+
+```
+P_0 = 1 - P*_1
+P_1 = P*_1 - P*_2
+P_2 = P*_2 - P*_3
+P_3 = P*_3 - 0
+```
+
+With boundary conditions: P*_0 = 1, P*_4 = 0
+
+**Implementation**: `src/core/probabilistic-model.ts:103-116`
+
+```typescript
+export function grmCategoryProbs(
+  theta: number,
+  itemParams: GRMItemParams = DEFAULT_GRM_PARAMS,
+): [number, number, number, number] {
+  const { discrimination: a, thresholds: b } = itemParams;
+  const pStar = brf(theta, a, b);
+
+  return [
+    Math.max(EPSILON, 1.0 - pStar[0]),
+    Math.max(EPSILON, pStar[0] - pStar[1]),
+    Math.max(EPSILON, pStar[1] - pStar[2]),
+    Math.max(EPSILON, pStar[2]),
+  ];
+}
+```
+
+### Bayesian Update via Laplace Approximation
+
+Given a rubric score observation, we update the mastery distribution using **MAP (Maximum A Posteriori)** estimation with a **Laplace approximation** for the posterior variance.
+
+#### Posterior Objective
+
+```
+log p(θ | score) = log p(score | θ) + log p(θ) + constant
+```
+
+Where:
+- Prior: `p(θ) = N(μ_prior, σ_prior²)`
+- Likelihood: `p(score | θ)` from GRM category probabilities
+
+#### Newton-Raphson Optimization
+
+We find the MAP estimate by iteratively solving:
+
+```
+θ_{n+1} = θ_n - g(θ_n) / h(θ_n)
+```
+
+Where:
+- `g(θ)` — Gradient of log-posterior
+- `h(θ)` — Hessian (second derivative) of log-posterior
+
+**Gradient Computation**: `src/core/probabilistic-model.ts:167-179`
+
+```typescript
+// Log-likelihood gradient
+const llGrad = (Q[s] - Q[s + 1]) / Ps;
+
+// Log-likelihood hessian
+const llHess = (R[s] - R[s + 1]) / Ps - llGrad * llGrad;
+
+// Prior gradient and hessian
+const priorGrad = -(theta - priorMu) / sigmaEff2;
+const priorHess = -1.0 / sigmaEff2;
+
+// Total posterior
+const grad = llGrad + priorGrad;
+const hess = llHess + priorHess;
+```
+
+Where:
+- `Q[k]` — First derivative of boundary response: `Q_k = a * P*_k * (1 - P*_k)`
+- `R[k]` — Second derivative: `R_k = a² * P*_k * (1 - P*_k) * (1 - 2*P*_k)`
+- `Ps` — Category probability for observed score
+
+**Damped Step**: Step size is clamped to prevent overshooting:
+
+```typescript
+let step = -grad / hess;
+if (Math.abs(step) > NR_MAX_STEP) {
+  step = Math.sign(step) * NR_MAX_STEP;
+}
+theta = theta + step;
+```
+
+**Convergence**: Iteration stops when `|step| < NR_TOLERANCE` (1e-6) or after `NR_MAX_ITER` (25) iterations.
+
+#### Laplace Posterior Variance
+
+The posterior variance is approximated as:
+
+```
+σ²_post = -1 / h(θ_MAP)
+```
+
+Where `h(θ_MAP)` is the Hessian at the converged MAP estimate.
+
+**Implementation**: `src/core/probabilistic-model.ts:206-238`
+
+```typescript
+const totalHess = llHessFinal + (-1.0 / sigmaEff2);
+let postSigma: number;
+if (totalHess >= 0) {
+  postSigma = sigmaEff; // fallback if Hessian not negative definite
+} else {
+  postSigma = Math.sqrt(-1.0 / totalHess);
+}
+postSigma = Math.max(SIGMA_MIN, Math.min(SIGMA_MAX, postSigma));
+```
+
+**Constants**:
+- `SIGMA_MIN = 0.05` — Minimum uncertainty (prevents overconfidence)
+- `SIGMA_MAX = 1.5` — Maximum uncertainty (prevents underconfidence)
+- `NR_TOLERANCE = 1e-6` — Convergence threshold
+- `NR_MAX_STEP = 3.0` — Damped step size limit
+
+### Default Item Parameters
+
+From `src/schemas/types.ts:31-34`:
+
+```typescript
+export const DEFAULT_GRM_PARAMS: GRMItemParams = {
+  discrimination: 1.0,
+  thresholds: [-1.0, 0.0, 1.0],
+};
+```
+
+**Interpretation**:
+- `discrimination = 1.0` — Moderate discrimination (standard for most concepts)
+- `thresholds = [-1.0, 0.0, 1.0]` — Symmetric boundaries around zero
+  - θ = -1.0 → 50% chance of score ≥ 1
+  - θ = 0.0 → 50% chance of score ≥ 2
+  - θ = 1.0 → 50% chance of score ≥ 3
+
+### Fisher Information
+
+The expected information a question provides about mastery at level θ:
+
+```
+I(θ) = Σ_{k=0}^{3} (dP_k/dθ)² / P_k
+```
+
+Where `dP_k/dθ = Q_k - Q_{k+1}` (difference of boundary derivatives).
+
+**Implementation**: `src/core/probabilistic-model.ts:266-295`
+
+```typescript
+export function grmFisherInformation(
+  theta: number,
+  itemParams: GRMItemParams = DEFAULT_GRM_PARAMS,
+): number {
+  // ... compute boundary probabilities and derivatives ...
+  let info = 0;
+  for (let k = 0; k <= 3; k++) {
+    const Pk = Math.max(EPSILON, pStar[k] - pStar[k + 1]);
+    const dPk = Q[k] - Q[k + 1];
+    info += (dPk * dPk) / Pk;
+  }
+  return info;
+}
+```
+
+**Usage**: Fisher information is used in probe selection to choose questions that maximize information gain for the user's current mastery level.
+
+### Rubric Mapping
+
+Entendi uses a 4-level comprehension rubric:
+
+| Score | Label | Meaning |
+|-------|-------|--------|
+| 0 | No comprehension | Cannot recall basic facts |
+| 1 | Surface recall | Can recall definitions but not apply |
+| 2 | Applied understanding | Can apply concept in familiar contexts |
+| 3 | Transfer mastery | Can transfer to novel contexts and explain trade-offs |
+
+Rubric scores map to FSRS grades as: `FSRS_grade = rubric_score + 1`
+
+**Implementation**: `src/core/probabilistic-model.ts:59-61`
+
+```typescript
+export function mapRubricToFsrsGrade(rubric: RubricScore): 1 | 2 | 3 | 4 {
+  return (rubric + 1) as 1 | 2 | 3 | 4;
+}
+```
+
+## Memory: FSRS-4.5 Simplified
+
+### Theoretical Foundation
+
+FSRS models memory retention using a **power-law forgetting curve** with two parameters:
+- **S (Stability)** — Days until retrievability drops to 90%
+- **D (Difficulty)** — Intrinsic item difficulty (1-10 scale)
+
+### Retrievability Function
+
+The probability of recall at time t (days since last review):
+
+```
+R(t, S) = (1 + FACTOR * t / S)^DECAY
+```
+
+Where:
+- `DECAY = -0.5` (power-law exponent)
+- `FACTOR = 19/81` (calibrated so R(S, S) = 0.9)
+
+**Implementation**: `src/core/probabilistic-model.ts:8-12`
+
+```typescript
+export function retrievability(t: number, S: number): number {
+  if (t <= 0) return 1.0;
+  if (S <= 0) return 0.0;
+  return (1 + FACTOR * t / S) ** DECAY;
+}
+```
+
+**Example**: If S = 10 days:
+- At t = 0: R = 1.0 (perfect recall)
+- At t = 10: R = 0.9 (90% recall probability)
+- At t = 20: R ≈ 0.74
+- At t = 50: R ≈ 0.48
+
+### Stability Update After Success
+
+After a successful recall (grades 2-4), stability increases:
+
+```
+S_new = S * (1 + exp(w4) * (11 - D)^w5 * S^w6 * (exp(w7 * (1 - R)) - 1) * hardPenalty * easyBonus)
+```
+
+**Simplified Implementation**: `src/core/probabilistic-model.ts:39-44`
+
+```typescript
+export function fsrsStabilityAfterSuccess(S: number, D: number, R: number, grade: 1 | 2 | 3 | 4): number {
+  const hardPenalty = grade === 2 ? 0.6 : 1;
+  const easyBonus = grade === 4 ? 1.9 : 1;
+  const newS = S * (1 + Math.exp(1.87) * (11 - D) ** 1 * S ** -0.17 * (Math.exp(0.8 * (1 - R)) - 1) * hardPenalty * easyBonus);
+  return Math.max(0.1, newS);
+}
+```
+
+**Calibrated Constants**:
+- `w4 = 1.87` (exp(w4) ≈ 6.5 base multiplier)
+- `w5 = 1` (difficulty exponent)
+- `w6 = -0.17` (stability diminishing returns)
+- `w7 = 0.8` (retrievability impact)
+- `hardPenalty = 0.6` for grade 2 (correct but required effort)
+- `easyBonus = 1.9` for grade 4 (trivially easy)
+
+### Difficulty Update
+
+Difficulty adapts based on performance:
+
+```
+ΔD = -w6 * (grade - 3)
+damped = ΔD * (10 - D) / 9
+D_next = D + damped
+D_new = w7 * D0_easy + (1 - w7) * D_next
+```
+
+**Implementation**: `src/core/probabilistic-model.ts:47-56`
+
+```typescript
+export function fsrsDifficultyUpdate(D: number, grade: 1 | 2 | 3 | 4): number {
+  const w6 = 3.0;
+  const w7 = 0.001;
+  const D0_easy = 2.5;
+  const deltaD = -w6 * (grade - 3);
+  const damped = deltaD * (10 - D) / 9;
+  const nextD = D + damped;
+  const reverted = w7 * D0_easy + (1 - w7) * nextD;
+  return Math.max(1, Math.min(10, reverted));
+}
+```
+
+**Behavior**:
+- Grade 4 (easy) → D decreases (moves toward 2.5)
+- Grade 2 (hard) → D increases (penalized)
+- Damping prevents extreme swings
+- Reversion keeps D in reasonable range [1, 10]
+
+### Prior Decay (Memory-Mastery Coupling)
+
+As memory fades (R decreases), mastery uncertainty increases:
+
+```
+μ_decayed = R * μ + (1 - R) * μ_prior
+σ_decayed = R * σ + (1 - R) * σ_prior
+```
+
+**Implementation**: `src/core/probabilistic-model.ts:18-23`
+
+```typescript
+export function decayPrior(mu: number, sigma: number, R: number): MasteryState {
+  return {
+    mu: R * mu + (1 - R) * PRIOR_MU,
+    sigma: R * sigma + (1 - R) * PRIOR_SIGMA,
+  };
+}
+```
+
+Where:
+- `PRIOR_MU = 0.0` (neutral initial mastery)
+- `PRIOR_SIGMA = 1.5` (high initial uncertainty)
+
+**Intuition**: If you haven't recalled a concept in 60 days and R = 0.3, your mastery belief reverts 70% toward the prior, reflecting increased uncertainty.
+
+## Combined Workflow
+
+### Observation → Update
+
+1. **Record Assessment Event** (probe response with rubric score)
+2. **Compute Retrievability**: `R = retrievability(daysSinceLastAssessed, S)`
+3. **Decay Prior**: `(μ_decayed, σ_decayed) = decayPrior(μ, σ, R)`
+4. **GRM Update**: `(μ_new, σ_new) = grmBayesianUpdate(score, μ_decayed, σ_decayed, itemParams)`
+5. **FSRS Update**:
+   - `S_new = fsrsStabilityAfterSuccess(S, D, R, grade)`
+   - `D_new = fsrsDifficultyUpdate(D, grade)`
+6. **Store Updated State**: `{mu: μ_new, sigma: σ_new, stability: S_new, difficulty: D_new}`
+
+### Probe Scheduling
+
+Probes are scheduled based on:
+- **Mastery Uncertainty**: High σ → more frequent probing
+- **Memory Decay**: Low R → higher priority for review
+- **Fisher Information**: Choose questions that maximize information gain
+- **Novelty Level**: Novel concepts trigger deeper probes
+
+**ZPD Frontier**: Concepts in the Zone of Proximal Development (σ high, μ near thresholds) are prioritized for probing and tutoring.
+
+## Implementation Files
+
+| File | Purpose |
+|------|--------|
+| `src/core/probabilistic-model.ts` | GRM, FSRS, and Bayesian update algorithms |
+| `src/schemas/types.ts` | MasteryState, MemoryState, GRMItemParams types |
+| `src/core/state-manager.ts` | Persistence of mastery/memory state |
+| `src/core/probe-scheduler.ts` | Probe urgency and scheduling logic |
+| `src/core/prerequisite-propagation.ts` | Graph-based mastery propagation |
+
+## Calibration and Validation
+
+**Item Parameters**: Currently using default GRM parameters. Future versions will calibrate per-concept discrimination and thresholds from population data.
+
+**FSRS Weights**: Simplified constants based on FSRS-4.5 research. Production systems should calibrate from user-specific retention data.
+
+**Evaluation**: Probe responses are scored by Claude using a detailed rubric (see tutor-engine.ts). Inter-rater reliability between Claude and human experts is tracked via `evaluatorConfidence` field.
+
+## References
+
+- **GRM**: Samejima, F. (1969). Estimation of latent ability using a response pattern of graded scores. *Psychometrika Monograph Supplement*.
+- **FSRS**: Jarrett Ye (2023). [Free Spaced Repetition Scheduler](https://github.com/open-spaced-repetition/fsrs4anki/wiki/The-Algorithm)
+- **Laplace Approximation**: Bishop, C. (2006). *Pattern Recognition and Machine Learning*, Section 4.4.
+- **Item Response Theory**: Embretson & Reise (2000). *Item Response Theory for Psychologists*.

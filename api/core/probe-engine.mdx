@@ -1,0 +1,382 @@
+---
+title: "Probe Engine"
+description: "Generate and evaluate Socratic comprehension probes using Claude"
+---
+
+The probe engine generates Socratic questions to assess conceptual understanding and evaluates user responses using a 0-3 rubric. It uses Claude Haiku 4.5 for fast, cost-effective generation and evaluation.
+
+## Core Functions
+
+### generateProbe
+
+Generate a Socratic comprehension probe for a concept.
+
+<ParamField path="input" type="ProbePromptInput" required>
+  <Expandable title="properties">
+    <ParamField path="conceptName" type="string" required>
+      Name of the concept to probe (e.g., "React hooks", "OAuth 2.0")
+    </ParamField>
+    <ParamField path="triggerContext" type="string" required>
+      Context in which the concept was observed (user's code, command, or prompt)
+    </ParamField>
+    <ParamField path="targetDepth" type="0 | 1 | 2 | 3" required>
+      Target depth level:
+      - 0: recall (name/define)
+      - 1: comprehension (explain why/how)
+      - 2: application (apply to novel scenario)
+      - 3: evaluation (critique/compare/trade-offs)
+    </ParamField>
+    <ParamField path="previousResponses" type="Array<object>" required>
+      Previous probe responses in this chain (empty array for first probe)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="ParsedProbe" type="object">
+  <Expandable title="properties">
+    <ResponseField name="question" type="string">
+      The generated probe question (1-2 sentences, concise and specific)
+    </ResponseField>
+    <ResponseField name="probeType" type="string">
+      One of: 'why', 'transfer', 'failure', 'counterfactual', 'dependency', 'context_bound'
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript probe-engine.ts
+import { generateProbe } from '@entendi/core';
+
+const probe = await generateProbe({
+  conceptName: 'React useEffect',
+  triggerContext: 'User wrote: useEffect(() => { fetchData(); }, [])',
+  targetDepth: 1, // comprehension
+  previousResponses: []
+});
+
+console.log(probe.question);
+// "Why did you pass an empty dependency array to useEffect?"
+console.log(probe.probeType);
+// "why"
+```
+
+### evaluateResponse
+
+Evaluate a user's response to a probe using the 0-3 rubric.
+
+<ParamField path="input" type="EvaluationPromptInput" required>
+  <Expandable title="properties">
+    <ParamField path="question" type="string" required>
+      The probe question that was asked
+    </ParamField>
+    <ParamField path="response" type="string" required>
+      The user's response
+    </ParamField>
+    <ParamField path="conceptName" type="string" required>
+      Name of the concept being assessed
+    </ParamField>
+    <ParamField path="depth" type="0 | 1 | 2 | 3" required>
+      Depth level of the probe
+    </ParamField>
+    <ParamField path="evaluationCriteria" type="string">
+      Optional concept-specific evaluation criteria
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="ProbeEvaluation" type="object">
+  <Expandable title="properties">
+    <ResponseField name="rubricScore" type="0 | 1 | 2 | 3">
+      - 0: No understanding (wrong, irrelevant, or "I don't know")
+      - 1: Surface/partial (vague awareness, cannot explain correctly)
+      - 2: Functional (correct, coherent explanation for depth level)
+      - 3: Deep/transferable (demonstrates insight, identifies trade-offs/edge cases)
+    </ResponseField>
+    <ResponseField name="confidence" type="number">
+      Evaluator confidence (0-1)
+    </ResponseField>
+    <ResponseField name="reasoning" type="string">
+      1-2 sentence explanation of the score
+    </ResponseField>
+    <ResponseField name="suggestFollowup" type="boolean">
+      Whether to probe deeper on this concept
+    </ResponseField>
+    <ResponseField name="misconceptionDetected" type="string | null">
+      Specific misconception identified, if any
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript probe-engine.ts
+import { evaluateResponse } from '@entendi/core';
+
+const evaluation = await evaluateResponse({
+  question: "Why did you pass an empty dependency array to useEffect?",
+  response: "So it only runs once when the component mounts.",
+  conceptName: "React useEffect",
+  depth: 1
+});
+
+console.log(evaluation);
+// {
+//   rubricScore: 2,
+//   confidence: 0.85,
+//   reasoning: "Correct functional understanding of empty dependency array behavior.",
+//   suggestFollowup: false,
+//   misconceptionDetected: null
+// }
+```
+
+## Prompt Builders (Pure Functions)
+
+### buildProbePrompt
+
+Build the system prompt for probe generation. Pure function — you can inspect or customize prompts before calling the LLM.
+
+<ParamField path="input" type="ProbePromptInput" required>
+  Same as `generateProbe` input
+</ParamField>
+
+<ResponseField name="string" type="string">
+  Complete prompt for Claude
+</ResponseField>
+
+```typescript probe-engine.ts
+import { buildProbePrompt } from '@entendi/core';
+
+const prompt = buildProbePrompt({
+  conceptName: 'OAuth 2.0',
+  triggerContext: 'User implemented client credentials flow',
+  targetDepth: 2,
+  previousResponses: []
+});
+
+console.log(prompt);
+// Full prompt including depth descriptions, probe types, and output format
+```
+
+### buildEvaluationPrompt
+
+Build the system prompt for evaluation.
+
+<ParamField path="input" type="EvaluationPromptInput" required>
+  Same as `evaluateResponse` input
+</ParamField>
+
+<ResponseField name="string" type="string">
+  Complete prompt for Claude
+</ResponseField>
+
+```typescript probe-engine.ts
+import { buildEvaluationPrompt } from '@entendi/core';
+
+const prompt = buildEvaluationPrompt({
+  question: "What would happen if you didn't include the dependency array?",
+  response: "The effect would run after every render.",
+  conceptName: "React useEffect",
+  depth: 1,
+  evaluationCriteria: "Must mention infinite loop risk if effect modifies state"
+});
+```
+
+## Response Parsers
+
+### parseProbeResponse
+
+Parse LLM response into structured probe. Handles JSON extraction from markdown code blocks and provides fallback parsing.
+
+<ParamField path="raw" type="string" required>
+  Raw LLM response text
+</ParamField>
+
+<ResponseField name="ParsedProbe" type="object">
+  Parsed probe with validated question and probe type
+</ResponseField>
+
+```typescript probe-engine.ts
+import { parseProbeResponse } from '@entendi/core';
+
+const rawResponse = `
+\`\`\`json
+{"question": "Why did you choose this approach?", "probeType": "why"}
+\`\`\`
+`;
+
+const parsed = parseProbeResponse(rawResponse);
+console.log(parsed);
+// { question: "Why did you choose this approach?", probeType: "why" }
+
+// Fallback parsing for malformed JSON
+const malformed = 'The question is: "What would happen if...?"';
+const fallback = parseProbeResponse(malformed);
+console.log(fallback);
+// { question: "What would happen if...?", probeType: "why" }
+```
+
+### parseEvaluationResponse
+
+Parse LLM evaluation response into structured evaluation.
+
+<ParamField path="raw" type="string" required>
+  Raw LLM response text
+</ParamField>
+
+<ResponseField name="ProbeEvaluation" type="object">
+  Parsed evaluation with validated rubric score (clamped to 0-3)
+</ResponseField>
+
+```typescript probe-engine.ts
+import { parseEvaluationResponse } from '@entendi/core';
+
+const rawEval = `
+{"rubricScore": 2, "confidence": 0.9, "reasoning": "Good explanation", "suggestFollowup": false, "misconceptionDetected": null}
+`;
+
+const parsed = parseEvaluationResponse(rawEval);
+console.log(parsed.rubricScore); // 2
+console.log(parsed.confidence);  // 0.9
+```
+
+## Type Definitions
+
+```typescript types.ts
+export interface ProbePromptInput {
+  conceptName: string;
+  triggerContext: string;
+  targetDepth: 0 | 1 | 2 | 3;
+  previousResponses: Array<{ question: string; response: string; score: RubricScore }>;
+}
+
+export interface EvaluationPromptInput {
+  question: string;
+  response: string;
+  conceptName: string;
+  depth: 0 | 1 | 2 | 3;
+  evaluationCriteria?: string;
+}
+
+export interface ParsedProbe {
+  question: string;
+  probeType: 'why' | 'transfer' | 'failure' | 'counterfactual' | 'dependency' | 'context_bound';
+}
+
+export interface ProbeEvaluation {
+  rubricScore: RubricScore;
+  confidence: number;
+  reasoning: string;
+  suggestFollowup: boolean;
+  misconceptionDetected: string | null;
+}
+
+export type RubricScore = 0 | 1 | 2 | 3;
+```
+
+## Probe Types Reference
+
+| Type | Description | Example |
+|------|-------------|----------|
+| `why` | Ask why a choice was made or why something works | "Why did you pass an empty dependency array?" |
+| `transfer` | Apply the concept in a different context | "How would you implement this with Vue instead of React?" |
+| `failure` | Explore what would happen if something went wrong | "What would happen if the API request fails?" |
+| `counterfactual` | Ask what would change if a condition were different | "What if you didn't use async/await here?" |
+| `dependency` | Explore prerequisites or dependencies | "What does this pattern depend on to work correctly?" |
+| `context_bound` | Ask about the specific context | "Why is this approach appropriate for this use case?" |
+
+## Depth Levels Reference
+
+| Level | Name | Description | Example Probe |
+|-------|------|-------------|---------------|
+| 0 | Recall | Can name/define the concept | "What is OAuth 2.0?" |
+| 1 | Comprehension | Can explain why/how it works | "Why do we use refresh tokens?" |
+| 2 | Application | Can apply to novel scenario | "How would you implement this for a mobile app?" |
+| 3 | Evaluation | Can critique/compare/evaluate | "What are the trade-offs between OAuth 2.0 and OIDC?" |
+
+## Complete Example
+
+```typescript example.ts
+import {
+  generateProbe,
+  evaluateResponse,
+  type ProbeEvaluation,
+  type RubricScore
+} from '@entendi/core';
+
+interface ProbeChain {
+  concept: string;
+  context: string;
+  history: Array<{ question: string; response: string; score: RubricScore }>;
+}
+
+async function conductProbeChain(chain: ProbeChain, userResponse: string): Promise<void> {
+  // Determine target depth based on history
+  const targetDepth = Math.min(chain.history.length + 1, 3) as 0 | 1 | 2 | 3;
+  
+  // Generate probe
+  const probe = await generateProbe({
+    conceptName: chain.concept,
+    triggerContext: chain.context,
+    targetDepth,
+    previousResponses: chain.history
+  });
+  
+  console.log(`[Depth ${targetDepth}] ${probe.question}`);
+  
+  // Evaluate response
+  const evaluation = await evaluateResponse({
+    question: probe.question,
+    response: userResponse,
+    conceptName: chain.concept,
+    depth: targetDepth
+  });
+  
+  console.log(`Score: ${evaluation.rubricScore}/3 (confidence: ${evaluation.confidence})`);
+  console.log(`Reasoning: ${evaluation.reasoning}`);
+  
+  if (evaluation.misconceptionDetected) {
+    console.log(`⚠ Misconception detected: ${evaluation.misconceptionDetected}`);
+  }
+  
+  // Add to history
+  chain.history.push({
+    question: probe.question,
+    response: userResponse,
+    score: evaluation.rubricScore
+  });
+  
+  // Continue probing if suggested and score < 3
+  if (evaluation.suggestFollowup && evaluation.rubricScore < 3 && targetDepth < 3) {
+    console.log('Suggesting follow-up probe...');
+  }
+}
+
+// Usage
+const chain: ProbeChain = {
+  concept: 'React useEffect',
+  context: 'User wrote: useEffect(() => { fetchData(); }, [])',
+  history: []
+};
+
+await conductProbeChain(chain, "It runs once when the component mounts.");
+await conductProbeChain(chain, "Because the dependency array is empty.");
+await conductProbeChain(chain, "If I added dependencies, it would re-run when they change.");
+```
+
+## Configuration
+
+The probe engine uses these defaults:
+
+```typescript probe-engine.ts
+const MODEL = 'claude-haiku-4-5-20251001';
+const MAX_TOKENS = 300;
+```
+
+The Anthropic client is lazy-initialized on first use and reused for subsequent calls. Set `ANTHROPIC_API_KEY` in your environment.
+
+## Anti-Gaming Rules
+
+The evaluation prompt includes strict anti-gaming rules:
+
+- Ignores meta-commentary like "I understand this deeply"
+- Confident tone with no specifics scores 0-1, not 2-3
+- Score 2+ requires specific mechanics, trade-offs, or failure modes
+- Terse, specific answers score higher than verbose, vague ones
+- Evaluates substance only, not grammar or fluency

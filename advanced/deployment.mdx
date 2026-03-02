@@ -1,0 +1,743 @@
+---
+title: Deployment
+description: Deploying Entendi to Cloudflare Workers and managing production infrastructure
+---
+
+## Overview
+
+Entendi's API is deployed to **Cloudflare Workers**, a serverless edge runtime that executes JavaScript/TypeScript on V8 isolates across Cloudflare's global network.
+
+**Key Benefits**:
+- **Global Edge Deployment**: Low latency worldwide
+- **Zero Cold Starts**: V8 isolate startup < 5ms
+- **Auto-scaling**: Handles traffic spikes without configuration
+- **Cost-effective**: Pay-per-request pricing
+
+## Prerequisites
+
+Before deploying:
+
+1. **Cloudflare Account**: Sign up at [cloudflare.com](https://cloudflare.com)
+2. **Wrangler CLI**: Installed via `npm install` (already in devDependencies)
+3. **Neon Database**: PostgreSQL connection string (or any PostgreSQL-compatible database)
+4. **Domain** (optional): Custom domain for production (e.g., `entendi.dev`)
+
+## Deployment Configuration
+
+### wrangler.toml
+
+The deployment configuration is in `wrangler.toml`:
+
+```toml
+name = "entendi-api"
+main = "src/api/worker.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+routes = [
+  { pattern = "entendi.dev", custom_domain = true },
+  { pattern = "api.entendi.dev", custom_domain = true }
+]
+
+[observability]
+enabled = true
+
+[ai]
+binding = "AI"
+
+[triggers]
+crons = ["0 8 * * 1"]  # Every Monday at 8am UTC
+
+[assets]
+directory = "public"
+run_worker_first = ["/api/*", "/health", "/", "/link", "/login", "/press", "/contact"]
+not_found_handling = "none"
+```
+
+**Key Settings**:
+
+- **main**: Entry point for the Worker
+- **nodejs_compat**: Enables Node.js APIs (fs, crypto, etc.)
+- **workers_dev**: Deploys to `*.workers.dev` subdomain (for testing)
+- **routes**: Custom domains for production
+- **observability**: Request metrics, error tracking, performance monitoring
+- **ai**: Cloudflare Workers AI binding (for future LLM features)
+- **crons**: Scheduled jobs (mastery summaries, backups)
+- **assets**: Serve static files from `public/` directory
+- **run_worker_first**: Routes that execute Worker logic before serving assets
+
+### Environment-Specific Config
+
+**Staging Environment**:
+
+```toml
+[env.staging]
+name = "entendi-api-staging"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+```
+
+Secrets for staging:
+```bash
+npx wrangler secret put DATABASE_URL --env staging
+npx wrangler secret put BETTER_AUTH_SECRET --env staging
+npx wrangler secret put BETTER_AUTH_URL --env staging
+```
+
+## Initial Deployment
+
+### 1. Authenticate Wrangler
+
+```bash
+npx wrangler login
+```
+
+This opens a browser to authenticate with your Cloudflare account.
+
+### 2. Create Database
+
+Set up a PostgreSQL database (Neon recommended):
+
+1. Sign up at [neon.tech](https://neon.tech)
+2. Create a new project
+3. Copy the connection string (looks like `postgresql://user:pass@host/dbname?sslmode=require`)
+
+**Apply Schema**:
+
+```bash
+# Locally, using your DATABASE_URL
+npm run db:push
+
+# Or run migrations
+npm run db:migrate:run
+```
+
+### 3. Set Production Secrets
+
+Secrets are stored encrypted in Cloudflare and injected at runtime:
+
+```bash
+# Required secrets
+npx wrangler secret put DATABASE_URL
+# Paste your Neon connection string
+
+npx wrangler secret put BETTER_AUTH_SECRET
+# Generate with: openssl rand -base64 32
+
+npx wrangler secret put BETTER_AUTH_URL
+# Production API URL, e.g., https://entendi.dev
+```
+
+**Optional Secrets** (OAuth, Email, Payments):
+
+```bash
+npx wrangler secret put GITHUB_CLIENT_ID
+npx wrangler secret put GITHUB_CLIENT_SECRET
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put STRIPE_SECRET_KEY
+npx wrangler secret put STRIPE_WEBHOOK_SECRET
+```
+
+### 4. Build for Production
+
+```bash
+npm run build
+```
+
+This builds:
+- API worker bundle (from `src/api/worker.ts`)
+- Dashboard assets (content-hashed to `public/assets/`)
+- Asset manifest (for serving correct URLs)
+
+### 5. Deploy to Cloudflare
+
+**Production Deployment**:
+
+```bash
+npx wrangler deploy
+```
+
+**Staging Deployment**:
+
+```bash
+npm run deploy:staging
+# Equivalent to: npx wrangler deploy --env staging
+```
+
+**Output**:
+```
+Total Upload: XX.XX KiB / gzip: XX.XX KiB
+Uploaded entendi-api (X.XX sec)
+Published entendi-api (X.XX sec)
+  https://entendi-api.workers.dev
+  https://entendi.dev
+  https://api.entendi.dev
+Current Deployment ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+### 6. Verify Deployment
+
+**Health Check**:
+```bash
+curl https://entendi.dev/health
+```
+
+**Expected Response**:
+```json
+{"status":"ok","timestamp":"2026-03-02T14:23:45.123Z"}
+```
+
+**Dashboard**:
+Open `https://entendi.dev/dashboard` in your browser.
+
+## Custom Domain Setup
+
+### Add Domain to Cloudflare
+
+1. Go to Cloudflare Dashboard → **Add a Site**
+2. Enter your domain (e.g., `entendi.dev`)
+3. Select a plan (Free is sufficient)
+4. Update nameservers at your registrar to point to Cloudflare
+
+### Configure DNS Records
+
+Cloudflare Workers automatically creates DNS records for custom domains specified in `wrangler.toml`.
+
+**Manual DNS Setup** (if needed):
+
+1. Go to **DNS** tab in Cloudflare Dashboard
+2. Add AAAA record:
+   - Name: `@` (or subdomain like `api`)
+   - Content: `100::` (Cloudflare Workers placeholder)
+   - Proxy: **Proxied** (orange cloud)
+
+### Update wrangler.toml Routes
+
+```toml
+routes = [
+  { pattern = "yourdomain.com", custom_domain = true },
+  { pattern = "api.yourdomain.com", custom_domain = true }
+]
+```
+
+Redeploy:
+```bash
+npx wrangler deploy
+```
+
+### SSL/TLS
+
+Cloudflare automatically provisions SSL certificates for custom domains (via Let's Encrypt). No configuration needed.
+
+**Verify**:
+```bash
+curl https://yourdomain.com/health
+```
+
+## Workers AI Binding (Future Use)
+
+Entendi includes a Cloudflare Workers AI binding for future LLM-based features:
+
+```toml
+[ai]
+binding = "AI"
+```
+
+**Usage Example**:
+
+```typescript
+// In src/api/worker.ts
+interface WorkerEnv {
+  AI: any;  // Cloudflare Workers AI binding
+  // ... other env vars
+}
+
+export default {
+  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+    // Use Workers AI for concept extraction
+    const result = await env.AI.run('@cf/meta/llama-2-7b-chat-int8', {
+      prompt: 'Extract concepts from: ...',
+    });
+    // ...
+  },
+};
+```
+
+**Available Models**: See [Cloudflare Workers AI docs](https://developers.cloudflare.com/workers-ai/models/)
+
+## Scheduled Jobs (Cron Triggers)
+
+### Configuration
+
+```toml
+[triggers]
+crons = ["0 8 * * 1"]  # Every Monday at 8am UTC
+```
+
+**Cron Syntax**: Standard Unix cron format
+- `0 8 * * 1` — 8:00 UTC, every Monday
+- `0 */6 * * *` — Every 6 hours
+- `0 0 * * *` — Daily at midnight UTC
+
+### Scheduled Handler
+
+Implemented in `src/api/worker.ts:82-103`:
+
+```typescript
+export default {
+  // ... fetch handler ...
+
+  async scheduled(_event: unknown, env: WorkerEnv, _ctx: unknown): Promise<void> {
+    const db = createDb(env.DATABASE_URL);
+
+    // 1. Send mastery summary emails
+    const emailResult = await runMasterySummaryJob(db);
+    console.log(`[Mastery Summary] sent=${emailResult.sent} skipped=${emailResult.skipped}`);
+
+    // 2. Backup database to R2
+    if (env.R2_BUCKET) {
+      const backup = await runBackup(db, env.R2_BUCKET);
+      console.log(`[Backup] ${backup.tables} tables, ${backup.totalRows} rows`);
+    }
+  },
+};
+```
+
+**Jobs**:
+
+1. **Mastery Summary Emails** (`src/api/jobs/mastery-summary.ts`):
+   - Queries users with significant mastery changes
+   - Sends weekly summary emails via Resend
+
+2. **Database Backups** (`src/api/worker.ts:40-67`):
+   - Exports tables to JSONL format
+   - Uploads to Cloudflare R2 bucket
+   - Timestamped: `backups/2026-03-02T08-00-00/concepts.jsonl`
+
+### R2 Bucket Setup (Backups)
+
+**Create Bucket**:
+
+1. Go to Cloudflare Dashboard → **R2**
+2. Create bucket: `entendi-backups`
+3. Note the bucket name
+
+**Add to wrangler.toml**:
+
+```toml
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "entendi-backups"
+```
+
+**Redeploy**:
+```bash
+npx wrangler deploy
+```
+
+**Verify Backups**:
+
+After the next cron run (Monday 8am UTC), check R2:
+
+```bash
+npx wrangler r2 object list entendi-backups
+```
+
+## Monitoring and Observability
+
+### Cloudflare Workers Analytics
+
+**Enable** (already in `wrangler.toml`):
+```toml
+[observability]
+enabled = true
+```
+
+**View Metrics**:
+1. Go to Cloudflare Dashboard → **Workers & Pages**
+2. Select `entendi-api`
+3. View **Metrics**, **Logs**, **Errors**
+
+**Available Metrics**:
+- Request rate (requests/sec)
+- Error rate (4xx, 5xx)
+- CPU time (ms per request)
+- Duration (total response time)
+
+### Real-time Logs
+
+**Tail Production Logs**:
+```bash
+npx wrangler tail
+```
+
+**Filter by Status**:
+```bash
+npx wrangler tail --status error
+```
+
+**Filter by Sampling**:
+```bash
+npx wrangler tail --sampling-rate 0.1  # 10% of requests
+```
+
+### Error Tracking
+
+**Sentry Integration** (recommended):
+
+1. Install Sentry SDK:
+   ```bash
+   npm install @sentry/browser
+   ```
+
+2. Initialize in `src/api/worker.ts`:
+   ```typescript
+   import * as Sentry from '@sentry/browser';
+
+   Sentry.init({
+     dsn: env.SENTRY_DSN,
+     environment: env.ENVIRONMENT || 'production',
+   });
+   ```
+
+3. Wrap fetch handler:
+   ```typescript
+   try {
+     return await cachedApp.app.fetch(request);
+   } catch (err) {
+     Sentry.captureException(err);
+     throw err;
+   }
+   ```
+
+### Performance Monitoring
+
+**Timing API** (Hono built-in):
+
+```typescript
+import { timing } from 'hono/timing';
+
+app.use('*', timing());
+```
+
+Adds `Server-Timing` header to all responses:
+```
+Server-Timing: total;dur=234.5
+```
+
+**Custom Timings**:
+```typescript
+app.use('*', async (c, next) => {
+  const start = Date.now();
+  await next();
+  const duration = Date.now() - start;
+  c.header('X-Response-Time', `${duration}ms`);
+});
+```
+
+## Database Management
+
+### Connection Pooling
+
+Neon serverless driver automatically handles connection pooling. No configuration needed.
+
+**Connection Limits**: Neon Free tier allows up to 100 concurrent connections. Upgrade to Pro for higher limits.
+
+### Migrations
+
+**Generate Migration** (locally):
+```bash
+npm run db:generate
+```
+
+**Apply to Production**:
+
+```bash
+# Option 1: Direct push (destructive, use with caution)
+DATABASE_URL="postgresql://prod-url" npm run db:push
+
+# Option 2: Run migrations via API endpoint
+curl -X POST https://entendi.dev/api/admin/migrate \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+```
+
+**Migration Job** (scheduled):
+
+Add a cron trigger for automated migrations:
+
+```toml
+[triggers]
+crons = [
+  "0 8 * * 1",      # Weekly jobs
+  "0 2 * * 0"       # Sunday 2am - run migrations
+]
+```
+
+### Backups and Restore
+
+**Automated Backups**: Weekly via cron job to R2 (see above)
+
+**Manual Backup**:
+```bash
+pg_dump "$DATABASE_URL" > backup.sql
+```
+
+**Restore from R2**:
+
+1. Download backup:
+   ```bash
+   npx wrangler r2 object get entendi-backups/backups/2026-03-02T08-00-00/concepts.jsonl > concepts.jsonl
+   ```
+
+2. Restore to database:
+   ```sql
+   COPY concepts FROM 'concepts.jsonl' WITH (FORMAT json);
+   ```
+
+## Scaling Considerations
+
+### Automatic Scaling
+
+Cloudflare Workers automatically scale to handle traffic:
+- **Free Tier**: 100,000 requests/day
+- **Paid Plan**: Unlimited requests ($0.50 per million)
+
+**No configuration needed** — Workers spin up/down based on demand.
+
+### Database Scaling
+
+**Neon Serverless**:
+- Automatically scales compute based on load
+- Autosuspends after 5 minutes of inactivity (Free tier)
+- Scale-to-zero architecture (pay only for active time)
+
+**Connection Pooling**: Use Neon's connection pooler for high-concurrency workloads:
+
+```bash
+DATABASE_URL="postgresql://user:pass@pooler.neon.tech/dbname"
+```
+
+### Asset Caching
+
+Dashboard assets are cached at Cloudflare edge:
+
+**Cache Headers** (set in `src/api/routes/dashboard.ts`):
+
+```typescript
+c.header('Cache-Control', 'public, max-age=31536000, immutable');
+```
+
+**Content Hashing**: Asset filenames include content hash (e.g., `dashboard-Q7X2K9ZY.js`), enabling long-term caching.
+
+## Security Best Practices
+
+### Secrets Management
+
+**Never commit secrets** to version control.
+
+**Use Wrangler Secrets**:
+```bash
+npx wrangler secret put SECRET_NAME
+```
+
+**Rotate Secrets** regularly:
+```bash
+npx wrangler secret put BETTER_AUTH_SECRET --force
+```
+
+### Rate Limiting
+
+Implement rate limiting with Cloudflare Workers KV:
+
+```typescript
+import { rateLimiter } from 'hono/rate-limiter';
+
+app.use(
+  '/api/*',
+  rateLimiter({
+    windowMs: 60 * 1000,  // 1 minute
+    limit: 100,           // 100 requests per minute
+    keyGenerator: (c) => c.req.header('cf-connecting-ip') || '',
+  })
+);
+```
+
+### CORS Configuration
+
+CORS is configured in `src/api/index.ts`:
+
+```typescript
+import { cors } from 'hono/cors';
+
+app.use(
+  '/api/*',
+  cors({
+    origin: ['https://entendi.dev', 'http://localhost:3456'],
+    credentials: true,
+  })
+);
+```
+
+**Production**: Restrict `origin` to production domains only.
+
+### Database Security
+
+**Connection Security**:
+- Use TLS: `sslmode=require` in `DATABASE_URL`
+- Rotate database passwords quarterly
+- Use separate database users for staging/production
+
+**Row-Level Security** (future enhancement):
+
+```sql
+ALTER TABLE user_concept_states ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY user_own_data ON user_concept_states
+  FOR ALL TO authenticated_user
+  USING (user_id = current_user_id());
+```
+
+## Rollback Strategy
+
+### Rollback to Previous Deployment
+
+**List Deployments**:
+```bash
+npx wrangler deployments list
+```
+
+**Rollback**:
+```bash
+npx wrangler rollback --message "Rollback to previous stable version"
+```
+
+**Verify**:
+```bash
+curl https://entendi.dev/health
+```
+
+### Database Rollback
+
+**Restore from Backup**:
+
+1. Download backup from R2 (see Backups section)
+2. Restore to database
+3. Verify data integrity
+
+**Migration Rollback** (if using Drizzle migrations):
+
+```bash
+npx drizzle-kit drop  # Interactive migration deletion
+```
+
+## CI/CD Integration
+
+### GitHub Actions Example
+
+`.github/workflows/deploy.yml`:
+
+```yaml
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+```
+
+**Setup**:
+
+1. Generate Cloudflare API Token:
+   - Go to Cloudflare Dashboard → **My Profile** → **API Tokens**
+   - Create token with **Edit Cloudflare Workers** permissions
+
+2. Add to GitHub Secrets:
+   - Go to GitHub repo → **Settings** → **Secrets**
+   - Add `CLOUDFLARE_API_TOKEN`
+
+3. Push to main branch → automatic deployment
+
+## Troubleshooting
+
+### Deployment Fails
+
+**Error**: `Error: Too large Worker script`
+
+**Solution**: Worker scripts are limited to 1MB after gzip. Reduce bundle size:
+```bash
+npx wrangler deploy --minify
+```
+
+**Error**: `Error: Unknown binding: R2_BUCKET`
+
+**Solution**: Ensure R2 bucket is created and configured in `wrangler.toml`.
+
+### Database Connection Errors
+
+**Error**: `Error: connect ECONNREFUSED`
+
+**Solution**:
+1. Verify `DATABASE_URL` secret is set correctly
+2. Check Neon project is active (not paused)
+3. Test connection from Workers:
+   ```bash
+   npx wrangler tail
+   curl https://entendi.dev/api/health
+   ```
+
+### Slow Response Times
+
+**Investigate**:
+1. Check Cloudflare Workers Analytics for CPU time
+2. Tail logs to see database query times:
+   ```bash
+   npx wrangler tail --format pretty
+   ```
+3. Enable Drizzle query logging (see Development guide)
+4. Consider adding database indexes:
+   ```sql
+   CREATE INDEX idx_user_concepts ON user_concept_states(user_id, concept_id);
+   ```
+
+## Production Checklist
+
+Before going live:
+
+- [ ] Set all required secrets via `wrangler secret put`
+- [ ] Configure custom domain in `wrangler.toml` and DNS
+- [ ] Enable Cloudflare observability
+- [ ] Set up R2 bucket for backups
+- [ ] Configure cron triggers for weekly jobs
+- [ ] Test health endpoint: `curl https://yourdomain.com/health`
+- [ ] Test dashboard: `https://yourdomain.com/dashboard`
+- [ ] Set up error tracking (Sentry)
+- [ ] Configure rate limiting
+- [ ] Review CORS policy for production origins
+- [ ] Set up GitHub Actions for CI/CD
+- [ ] Document rollback procedure for your team
+
+## Next Steps
+
+- **Monitor Performance**: Set up alerts for error rate, response time
+- **Scale Database**: Upgrade Neon plan if approaching connection limits
+- **Add CDN Caching**: Use Cloudflare Cache API for expensive queries
+- **Multi-region**: Workers run globally by default, but consider read replicas for database
+- **Compliance**: GDPR, CCPA data handling (user data export, deletion)

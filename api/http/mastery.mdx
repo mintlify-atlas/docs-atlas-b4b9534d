@@ -1,0 +1,278 @@
+---
+title: Mastery
+description: Track user mastery states and Zone of Proximal Development
+---
+
+<Note>
+  All mastery endpoints require authentication.
+</Note>
+
+Mastery endpoints provide access to user learning progress, concept mastery levels, and personalized learning recommendations.
+
+## Get All Mastery States
+
+Retrieve mastery states for all concepts the authenticated user has been assessed on.
+
+```bash GET /api/mastery
+curl https://api.entendi.dev/api/mastery \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+[
+  {
+    "userId": "usr_abc123",
+    "conceptId": "python-list-comprehensions",
+    "mu": 1.2,
+    "sigma": 0.8,
+    "stability": 1.5,
+    "difficulty": 5.0,
+    "lastAssessed": "2026-03-01T14:30:00.000Z",
+    "assessmentCount": 5,
+    "tutoredCount": 2,
+    "untutoredCount": 3,
+    "muUntutored": 0.9,
+    "sigmaUntutored": 1.0,
+    "createdAt": "2026-02-15T10:00:00.000Z",
+    "updatedAt": "2026-03-01T14:30:00.000Z"
+  }
+]
+```
+
+<ResponseField name="userId" type="string" required>
+  User ID
+</ResponseField>
+
+<ResponseField name="conceptId" type="string" required>
+  Concept ID
+</ResponseField>
+
+<ResponseField name="mu" type="number" required>
+  Mastery mean (logit scale, ~N(0,1.5)). Convert to probability: `1 / (1 + exp(-mu))`
+</ResponseField>
+
+<ResponseField name="sigma" type="number" required>
+  Mastery uncertainty (standard deviation). Decreases with more assessments. Initial: 1.5
+</ResponseField>
+
+<ResponseField name="stability" type="number" required>
+  Memory stability factor (used for retention prediction)
+</ResponseField>
+
+<ResponseField name="difficulty" type="number" required>
+  Concept difficulty estimate (1-10 scale, default: 5.0)
+</ResponseField>
+
+<ResponseField name="lastAssessed" type="string">
+  ISO 8601 timestamp of most recent assessment
+</ResponseField>
+
+<ResponseField name="assessmentCount" type="number" required>
+  Total number of assessments (tutored + untutored)
+</ResponseField>
+
+<ResponseField name="tutoredCount" type="number" required>
+  Number of assessments where tutoring was active
+</ResponseField>
+
+<ResponseField name="untutoredCount" type="number" required>
+  Number of assessments without tutoring
+</ResponseField>
+
+<ResponseField name="muUntutored" type="number" required>
+  Mastery mean excluding tutored assessments (represents intrinsic mastery)
+</ResponseField>
+
+<ResponseField name="sigmaUntutored" type="number" required>
+  Uncertainty for untutored mastery
+</ResponseField>
+
+## Get ZPD Frontier
+
+Retrieve concepts in the user's Zone of Proximal Development (ZPD) — concepts that are challenging but learnable because all prerequisites are met.
+
+```bash GET /api/mastery/zpd-frontier
+curl https://api.entendi.dev/api/mastery/zpd-frontier?threshold=0.7 \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Query Parameters
+
+<ParamField query="threshold" type="number" default="0.7">
+  Mastery probability threshold (0-1). Concepts below this threshold with met prerequisites are included in the frontier.
+</ParamField>
+
+### Response
+
+```json
+{
+  "frontier": [
+    {
+      "id": "python-generators",
+      "domain": "programming",
+      "specificity": "technique",
+      "mu": 0.3,
+      "sigma": 1.2
+    },
+    {
+      "id": "react-context-api",
+      "domain": "programming",
+      "specificity": "topic",
+      "mu": -0.5,
+      "sigma": 1.5
+    }
+  ]
+}
+```
+
+<ResponseField name="frontier" type="array" required>
+  Array of concepts in the ZPD
+</ResponseField>
+
+<ResponseField name="frontier[].id" type="string" required>
+  Concept ID
+</ResponseField>
+
+<ResponseField name="frontier[].domain" type="string" required>
+  Concept domain
+</ResponseField>
+
+<ResponseField name="frontier[].specificity" type="string" required>
+  Concept specificity level
+</ResponseField>
+
+<ResponseField name="frontier[].mu" type="number" required>
+  Current mastery mean (logit scale)
+</ResponseField>
+
+<ResponseField name="frontier[].sigma" type="number" required>
+  Current mastery uncertainty
+</ResponseField>
+
+**ZPD Selection Logic:**
+
+1. Mastery probability `< threshold` (challenging)
+2. All prerequisites have mastery `>= threshold` (prerequisites met)
+3. No circular dependencies
+
+## Get Mastery for Concept
+
+Retrieve the authenticated user's mastery state for a specific concept.
+
+```bash GET /api/mastery/:conceptId
+curl https://api.entendi.dev/api/mastery/python-list-comprehensions \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+{
+  "userId": "usr_abc123",
+  "conceptId": "python-list-comprehensions",
+  "mu": 1.2,
+  "sigma": 0.8,
+  "stability": 1.5,
+  "difficulty": 5.0,
+  "lastAssessed": "2026-03-01T14:30:00.000Z",
+  "assessmentCount": 5,
+  "tutoredCount": 2,
+  "untutoredCount": 3,
+  "muUntutored": 0.9,
+  "sigmaUntutored": 1.0,
+  "createdAt": "2026-02-15T10:00:00.000Z",
+  "updatedAt": "2026-03-01T14:30:00.000Z"
+}
+```
+
+If the concept has never been assessed, returns default values:
+
+```json
+{
+  "mu": 0,
+  "sigma": 1.5,
+  "assessmentCount": 0
+}
+```
+
+## Get Assessment History
+
+Retrieve the most recent assessment events for a specific concept.
+
+```bash GET /api/mastery/:conceptId/history
+curl https://api.entendi.dev/api/mastery/python-list-comprehensions/history \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+[
+  {
+    "id": 12345,
+    "userId": "usr_abc123",
+    "conceptId": "python-list-comprehensions",
+    "eventType": "probe_response",
+    "rubricScore": 3,
+    "evaluatorConfidence": 0.92,
+    "muBefore": 0.8,
+    "muAfter": 1.2,
+    "probeDepth": 2,
+    "tutored": false,
+    "probeTokenId": "tok_xyz789",
+    "responseText": "List comprehensions provide a concise way to create lists...",
+    "evaluationCriteria": "Correct explanation with examples",
+    "responseFeatures": {
+      "wordCount": 45,
+      "charCount": 280,
+      "formattingScore": 0.8
+    },
+    "integrityScore": 0.95,
+    "createdAt": "2026-03-01T14:30:00.000Z"
+  }
+]
+```
+
+<ResponseField name="id" type="number" required>
+  Unique assessment event ID
+</ResponseField>
+
+<ResponseField name="eventType" type="string" required>
+  Type of assessment: `probe_response`, `tutor_response`, `teach_me_complete`
+</ResponseField>
+
+<ResponseField name="rubricScore" type="number" required>
+  Assessment score (0-4): 0=no understanding, 1=minimal, 2=partial, 3=solid, 4=exceptional
+</ResponseField>
+
+<ResponseField name="evaluatorConfidence" type="number" required>
+  Evaluator's confidence in the rubric score (0-1)
+</ResponseField>
+
+<ResponseField name="muBefore" type="number" required>
+  Mastery mean before this assessment
+</ResponseField>
+
+<ResponseField name="muAfter" type="number" required>
+  Mastery mean after this assessment
+</ResponseField>
+
+<ResponseField name="probeDepth" type="number" required>
+  Depth level of the probe (1=surface, 2=intermediate, 3=deep)
+</ResponseField>
+
+<ResponseField name="tutored" type="boolean" required>
+  Whether tutoring was active during this assessment
+</ResponseField>
+
+<ResponseField name="responseText" type="string">
+  User's response text (if recorded)
+</ResponseField>
+
+<ResponseField name="integrityScore" type="number">
+  Integrity check score (0-1, null if not computed). Higher = more authentic.
+</ResponseField>
+
+**Note:** Returns up to 50 most recent events, ordered by `createdAt` ascending.

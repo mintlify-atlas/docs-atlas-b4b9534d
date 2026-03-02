@@ -1,0 +1,455 @@
+---
+title: Analytics
+description: Learning analytics, timelines, and velocity metrics
+---
+
+<Note>
+  All analytics endpoints require authentication.
+</Note>
+
+Analytics endpoints provide insights into learning progress, velocity, activity patterns, and concept-specific timelines.
+
+## Concept Timeline
+
+Retrieve mastery progression over time for a specific concept.
+
+```bash GET /api/analytics/timeline/:conceptId
+curl https://api.entendi.dev/api/analytics/timeline/python-list-comprehensions \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+{
+  "conceptId": "python-list-comprehensions",
+  "currentMastery": {
+    "min": 68,
+    "max": 88,
+    "display": "78%"
+  },
+  "timeline": [
+    {
+      "eventId": 12340,
+      "timestamp": "2026-02-15T10:00:00.000Z",
+      "mastery": { "min": 35, "max": 65, "display": "50%" },
+      "eventType": "probe_response",
+      "rubricScore": 2,
+      "integrityScore": 0.92
+    },
+    {
+      "eventId": 12345,
+      "timestamp": "2026-03-01T14:30:00.000Z",
+      "mastery": { "min": 68, "max": 88, "display": "78%" },
+      "eventType": "probe_response",
+      "rubricScore": 3,
+      "integrityScore": 0.95
+    }
+  ]
+}
+```
+
+<ResponseField name="conceptId" type="string" required>
+  Concept identifier
+</ResponseField>
+
+<ResponseField name="currentMastery" type="object">
+  Current mastery range (null if never assessed)
+</ResponseField>
+
+<ResponseField name="currentMastery.min" type="number" required>
+  Lower bound of mastery confidence interval (0-100)
+</ResponseField>
+
+<ResponseField name="currentMastery.max" type="number" required>
+  Upper bound of mastery confidence interval (0-100)
+</ResponseField>
+
+<ResponseField name="currentMastery.display" type="string" required>
+  Display string (e.g., "78%" or "68-88%" if uncertain)
+</ResponseField>
+
+<ResponseField name="timeline" type="array" required>
+  Assessment events ordered by timestamp (up to 200 events)
+</ResponseField>
+
+<ResponseField name="timeline[].eventId" type="number" required>
+  Assessment event ID
+</ResponseField>
+
+<ResponseField name="timeline[].timestamp" type="string" required>
+  ISO 8601 timestamp
+</ResponseField>
+
+<ResponseField name="timeline[].mastery" type="object" required>
+  Mastery range at this point in time
+</ResponseField>
+
+<ResponseField name="timeline[].eventType" type="string" required>
+  Assessment type
+</ResponseField>
+
+<ResponseField name="timeline[].rubricScore" type="number" required>
+  Rubric score (0-4)
+</ResponseField>
+
+<ResponseField name="timeline[].integrityScore" type="number">
+  Integrity score (0-1)
+</ResponseField>
+
+## Aggregate Timeline
+
+Retrieve learning progress across all concepts, grouped by day.
+
+```bash GET /api/analytics/timeline
+curl https://api.entendi.dev/api/analytics/timeline \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+{
+  "timeline": [
+    {
+      "date": "2026-02-15",
+      "assessments": 8,
+      "avgDelta": 0.05,
+      "cumulativeDelta": 0.05
+    },
+    {
+      "date": "2026-02-16",
+      "assessments": 12,
+      "avgDelta": 0.08,
+      "cumulativeDelta": 0.13
+    }
+  ]
+}
+```
+
+<ResponseField name="timeline" type="array" required>
+  Daily learning progress points (up to 500 recent events)
+</ResponseField>
+
+<ResponseField name="timeline[].date" type="string" required>
+  Date in YYYY-MM-DD format
+</ResponseField>
+
+<ResponseField name="timeline[].assessments" type="number" required>
+  Number of assessments on this day
+</ResponseField>
+
+<ResponseField name="timeline[].avgDelta" type="number" required>
+  Average mastery gain per assessment (as probability delta, 0-1 scale)
+</ResponseField>
+
+<ResponseField name="timeline[].cumulativeDelta" type="number" required>
+  Cumulative mastery gain from start to this day
+</ResponseField>
+
+## Learning Velocity
+
+Retrieve learning velocity metrics over rolling time windows (7 days, 30 days, 90 days).
+
+```bash GET /api/analytics/velocity
+curl https://api.entendi.dev/api/analytics/velocity \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+{
+  "velocity": {
+    "7d": {
+      "assessments": 25,
+      "avgDelta": 0.06,
+      "conceptsAssessed": 12
+    },
+    "30d": {
+      "assessments": 98,
+      "avgDelta": 0.05,
+      "conceptsAssessed": 32
+    },
+    "90d": {
+      "assessments": 245,
+      "avgDelta": 0.04,
+      "conceptsAssessed": 67
+    }
+  },
+  "snapshots": [
+    {
+      "userId": "usr_abc123",
+      "date": "2026-02-15",
+      "assessmentCount": 8,
+      "conceptsAssessed": 6,
+      "avgMasteryDelta": 0.05,
+      "totalDismissals": 1,
+      "avgIntegrityScore": 0.92,
+      "probeCount": 8,
+      "tutorCount": 2,
+      "domains": { "programming": 5, "mathematics": 3 }
+    }
+  ]
+}
+```
+
+<ResponseField name="velocity" type="object" required>
+  Velocity metrics for rolling time windows
+</ResponseField>
+
+<ResponseField name="velocity.7d" type="object" required>
+  Last 7 days
+</ResponseField>
+
+<ResponseField name="velocity.7d.assessments" type="number" required>
+  Total assessments in window
+</ResponseField>
+
+<ResponseField name="velocity.7d.avgDelta" type="number" required>
+  Average mastery gain per assessment
+</ResponseField>
+
+<ResponseField name="velocity.7d.conceptsAssessed" type="number" required>
+  Number of unique concepts assessed
+</ResponseField>
+
+<ResponseField name="snapshots" type="array" required>
+  Daily snapshot data (up to 90 days, ordered by date ascending)
+</ResponseField>
+
+<ResponseField name="snapshots[].date" type="string" required>
+  Date in YYYY-MM-DD format
+</ResponseField>
+
+<ResponseField name="snapshots[].assessmentCount" type="number" required>
+  Assessments on this day
+</ResponseField>
+
+<ResponseField name="snapshots[].conceptsAssessed" type="number" required>
+  Unique concepts assessed
+</ResponseField>
+
+<ResponseField name="snapshots[].avgIntegrityScore" type="number">
+  Average integrity score (0-1)
+</ResponseField>
+
+<ResponseField name="snapshots[].domains" type="object" required>
+  Assessment count by domain (e.g., `{"programming": 5}`)
+</ResponseField>
+
+## Activity Heatmap
+
+Retrieve daily assessment counts for calendar heatmap visualization.
+
+```bash GET /api/analytics/activity-heatmap
+curl https://api.entendi.dev/api/analytics/activity-heatmap?days=365 \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Query Parameters
+
+<ParamField query="days" type="number" default="365">
+  Number of days to include (lookback period)
+</ParamField>
+
+### Response
+
+```json
+{
+  "heatmap": [
+    {
+      "date": "2025-03-02",
+      "assessmentCount": 8,
+      "conceptsAssessed": 6,
+      "avgMasteryDelta": 0.05,
+      "domains": { "programming": 5, "mathematics": 3 }
+    },
+    {
+      "date": "2025-03-03",
+      "assessmentCount": 12,
+      "conceptsAssessed": 9,
+      "avgMasteryDelta": 0.07,
+      "domains": { "programming": 8, "science": 4 }
+    }
+  ]
+}
+```
+
+<ResponseField name="heatmap" type="array" required>
+  Daily activity snapshots ordered by date ascending
+</ResponseField>
+
+<ResponseField name="heatmap[].date" type="string" required>
+  Date in YYYY-MM-DD format
+</ResponseField>
+
+<ResponseField name="heatmap[].assessmentCount" type="number" required>
+  Total assessments on this day
+</ResponseField>
+
+<ResponseField name="heatmap[].conceptsAssessed" type="number" required>
+  Unique concepts assessed
+</ResponseField>
+
+<ResponseField name="heatmap[].avgMasteryDelta" type="number" required>
+  Average mastery gain
+</ResponseField>
+
+<ResponseField name="heatmap[].domains" type="object" required>
+  Assessment count per domain
+</ResponseField>
+
+## Concept Profile
+
+Retrieve comprehensive analytics for a single concept, including mastery, timeline, tutor sessions, dismissals, and prerequisites.
+
+```bash GET /api/analytics/concept/:conceptId
+curl https://api.entendi.dev/api/analytics/concept/python-list-comprehensions \
+  -H "x-api-key: your_api_key_here"
+```
+
+### Response
+
+```json
+{
+  "concept": {
+    "id": "python-list-comprehensions",
+    "domain": "programming",
+    "specificity": "technique",
+    "description": "Concise syntax for creating lists in Python"
+  },
+  "mastery": {
+    "min": 68,
+    "max": 88,
+    "display": "78%"
+  },
+  "analytics": {
+    "userId": "usr_abc123",
+    "conceptId": "python-list-comprehensions",
+    "firstAssessedAt": "2026-02-15T10:00:00.000Z",
+    "lastAssessedAt": "2026-03-01T14:30:00.000Z",
+    "totalProbes": 5,
+    "totalTutorSessions": 1,
+    "totalDismissals": 1,
+    "peakMastery": 0.88,
+    "currentStreak": 3,
+    "longestStreak": 5,
+    "avgResponseWordCount": 45,
+    "avgIntegrityScore": 0.93
+  },
+  "timeline": [
+    {
+      "type": "assessment",
+      "eventId": 12345,
+      "timestamp": "2026-03-01T14:30:00.000Z",
+      "mastery": { "min": 68, "max": 88, "display": "78%" },
+      "eventType": "probe_response",
+      "rubricScore": 3,
+      "integrityScore": 0.95,
+      "responseText": "List comprehensions are..."
+    },
+    {
+      "type": "dismissal",
+      "eventId": 12340,
+      "timestamp": "2026-02-20T11:00:00.000Z",
+      "reason": "topic_change",
+      "note": "Switched to learning React",
+      "requeued": false,
+      "resolvedAs": null
+    }
+  ],
+  "tutorSessions": [
+    {
+      "id": "ses_xyz789",
+      "userId": "usr_abc123",
+      "conceptId": "python-list-comprehensions",
+      "phase": "complete",
+      "startedAt": "2026-02-16T15:00:00.000Z",
+      "lastActivityAt": "2026-02-16T15:25:00.000Z",
+      "triggerScore": 1,
+      "phase1Score": 2,
+      "phase4Score": 3,
+      "lastMisconception": "Thought list comprehensions were slower than loops",
+      "researchPerformed": true,
+      "sources": ["https://docs.python.org/3/tutorial/datastructures.html"]
+    }
+  ],
+  "dismissals": [
+    {
+      "id": 12340,
+      "userId": "usr_abc123",
+      "conceptId": "python-list-comprehensions",
+      "probeTokenId": "tok_abc123",
+      "reason": "topic_change",
+      "note": "Switched to learning React",
+      "requeued": false,
+      "resolvedAt": null,
+      "resolvedAs": null,
+      "createdAt": "2026-02-20T11:00:00.000Z"
+    }
+  ],
+  "prerequisites": [
+    {
+      "conceptId": "python-for-loops",
+      "mastery": { "min": 82, "max": 95, "display": "88%" }
+    },
+    {
+      "conceptId": "python-lists",
+      "mastery": { "min": 75, "max": 90, "display": "82%" }
+    }
+  ]
+}
+```
+
+<ResponseField name="concept" type="object" required>
+  Concept metadata
+</ResponseField>
+
+<ResponseField name="mastery" type="object">
+  Current mastery range (null if never assessed)
+</ResponseField>
+
+<ResponseField name="analytics" type="object">
+  Aggregated analytics (null if never assessed)
+</ResponseField>
+
+<ResponseField name="analytics.peakMastery" type="number" required>
+  Highest mastery level achieved (0-1)
+</ResponseField>
+
+<ResponseField name="analytics.currentStreak" type="number" required>
+  Current consecutive assessment streak
+</ResponseField>
+
+<ResponseField name="analytics.longestStreak" type="number" required>
+  Longest consecutive assessment streak
+</ResponseField>
+
+<ResponseField name="timeline" type="array" required>
+  Combined timeline of assessments and dismissals (up to 200 events)
+</ResponseField>
+
+<ResponseField name="timeline[].type" type="string" required>
+  Event type: `assessment` or `dismissal`
+</ResponseField>
+
+<ResponseField name="tutorSessions" type="array" required>
+  Tutor session history (most recent first)
+</ResponseField>
+
+<ResponseField name="dismissals" type="array" required>
+  Dismissal events (most recent first)
+</ResponseField>
+
+<ResponseField name="prerequisites" type="array" required>
+  Prerequisites with current mastery levels
+</ResponseField>
+
+**Error Response:**
+
+```json
+{
+  "error": "Concept not found"
+}
+```

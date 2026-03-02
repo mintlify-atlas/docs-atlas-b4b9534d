@@ -1,0 +1,288 @@
+---
+title: Analytics & Insights
+description: Track learning velocity, activity patterns, and domain mastery over time
+---
+
+The **Analytics** tab provides visual insights into your learning patterns, progress trends, and knowledge distribution.
+
+## Activity Heatmap
+
+A GitHub-style calendar heatmap showing **assessment frequency** over the past year.
+
+### What it Shows
+
+- **Each cell** = one day
+- **Color intensity** = number of assessments completed that day
+  - Light beige: 0–1 assessments
+  - Darker shades: Higher activity
+  - Dark terracotta: Peak activity days
+
+### Use Cases
+
+- **Identify learning patterns**: Do you learn more on weekdays or weekends?
+- **Track consistency**: Are there gaps indicating breaks from AI-assisted work?
+- **Measure engagement**: Total assessments per week/month
+
+The heatmap is powered by **daily snapshots** stored in the database:
+
+```typescript
+interface DailySnapshot {
+  date: string; // YYYY-MM-DD
+  assessmentCount: number;
+  conceptsAssessed: number;
+  avgMasteryDelta: number;
+  domains: string[]; // domains assessed that day
+}
+```
+
+## Learning Velocity
+
+A line chart tracking **cumulative mastery gain** over time.
+
+### What it Shows
+
+- **X-axis**: Date
+- **Y-axis**: Cumulative mastery delta (sum of all assessment improvements)
+- **Line**: Smooth curve showing learning trajectory
+- **Shaded area**: Visual emphasis of growth
+
+### How It's Calculated
+
+For each assessment:
+
+```
+delta = pMastery(mu_after) - pMastery(mu_before)
+```
+
+Daily deltas are summed cumulatively:
+
+```
+day1: +5%
+day2: +3% → cumulative = +8%
+day3: +7% → cumulative = +15%
+```
+
+### Velocity Windows
+
+View learning velocity across rolling time windows:
+
+- **7 days**: Short-term sprint velocity
+- **30 days**: Monthly learning rate
+- **90 days**: Quarterly trend
+
+Each window shows:
+
+- **Total assessments**: Count of probes/tutor sessions
+- **Avg delta**: Average mastery improvement per assessment
+- **Concepts assessed**: Unique concepts evaluated
+
+### Interpreting the Chart
+
+- **Steep upward slope**: High learning velocity (many assessments, strong improvements)
+- **Plateau**: Stable mastery (fewer assessments or maintenance mode)
+- **Decline**: Rare, indicates reassessments with lower scores
+
+## Domain Strengths Radar
+
+A radar chart comparing **average mastery across knowledge domains**.
+
+### What it Shows
+
+- **Each axis**: One domain (e.g., security, cloud, frontend)
+- **Radial distance**: Average mastery percentage (0–100%)
+- **Shaded polygon**: Your mastery profile
+
+### Use Cases
+
+- **Identify strengths**: Which domains do you excel in?
+- **Spot gaps**: Which domains need more focus?
+- **Balance learning**: Ensure broad vs. deep knowledge
+
+### Calculation
+
+For each domain:
+
+1. Find all concepts in that domain
+2. Get mastery state for each concept
+3. Compute average `pMastery(mu)` across concepts
+4. Convert to percentage (0–100)
+
+**Minimum 3 domains required** to render the radar chart.
+
+### Example
+
+```
+Security: 75% (strong)
+Cloud: 60% (moderate)
+Frontend: 45% (developing)
+```
+
+The chart visualizes this as a triangle with vertices at those radial distances.
+
+## Review Needed
+
+A list of concepts **predicted to decay** based on memory models.
+
+### What it Shows
+
+- Concepts with high mastery but low retrievability
+- Sorted by urgency (lowest retrievability first)
+- Shows concept name, current mastery, and days since last assessment
+
+### How Memory Decay Works
+
+Entendi uses a **stability-based memory model**:
+
+```typescript
+R = retrievability(elapsed_days, stability)
+```
+
+Where:
+
+- `elapsed_days`: Time since last assessment
+- `stability`: Concept-specific retention rate (increases with successful reviews)
+- `R`: Retrievability (0–1.0)
+
+When `R < 0.7` for a concept with mastery > 70%, it's flagged for review.
+
+### Review Strategies
+
+- **Proactive**: Use the list to request tutor sessions (`teach me about X`)
+- **Reactive**: Entendi automatically increases probe frequency for decaying concepts
+- **Spaced repetition**: Concepts appear more frequently as they approach decay threshold
+
+## Mastery Snapshots
+
+Daily snapshots aggregate your learning activity and are used to power all analytics charts.
+
+### Snapshot Schema
+
+```sql
+CREATE TABLE daily_snapshots (
+  userId TEXT,
+  date TEXT, -- YYYY-MM-DD
+  assessmentCount INTEGER,
+  conceptsAssessed INTEGER,
+  avgMasteryDelta REAL,
+  domains JSONB -- array of domains assessed
+);
+```
+
+### Snapshot Generation
+
+Snapshots are created:
+
+- **On-demand**: When analytics endpoints are called
+- **Background**: Nightly cron job for all active users
+- **Real-time**: After each assessment (updates today's snapshot)
+
+### Data Retention
+
+- **365 days** of daily snapshots retained for heatmap
+- **90 days** used for velocity calculations
+- Older snapshots archived for historical analysis
+
+## Timeline API
+
+The analytics system exposes timeline endpoints for granular exploration:
+
+### Per-Concept Timeline
+
+```
+GET /api/analytics/timeline/:conceptId
+```
+
+Returns assessment events for a single concept with mastery progression:
+
+```json
+{
+  "conceptId": "http/cors",
+  "currentMastery": { "value": 72, "low": 65, "high": 79 },
+  "timeline": [
+    {
+      "eventId": "evt_123",
+      "timestamp": "2026-03-01T14:30:00Z",
+      "mastery": { "value": 72, "low": 65, "high": 79 },
+      "eventType": "probe",
+      "rubricScore": 3,
+      "integrityScore": 0.92
+    }
+  ]
+}
+```
+
+### Aggregate Timeline
+
+```
+GET /api/analytics/timeline
+```
+
+Returns daily mastery deltas across all concepts:
+
+```json
+{
+  "timeline": [
+    {
+      "date": "2026-03-01",
+      "assessments": 5,
+      "avgDelta": 0.08,
+      "cumulativeDelta": 1.45
+    }
+  ]
+}
+```
+
+## Exporting Data
+
+While the dashboard doesn't include built-in export, you can use the API with your personal API key:
+
+1. Go to **Settings** → **API Keys**
+2. Create a new key
+3. Use it to fetch analytics data:
+
+```bash
+curl -H "Authorization: Bearer YOUR_KEY" \
+  https://entendi.dev/api/analytics/timeline
+```
+
+See [API Reference](/api/analytics) for all available endpoints.
+
+## Chart Interactions
+
+### Activity Heatmap
+
+- **Hover**: View exact assessment count for a day
+- **Click**: (future) Drill down to that day's assessment list
+
+### Learning Velocity
+
+- **Hover**: View cumulative delta at each point
+- **Toggle**: Switch between 7d/30d/90d windows
+
+### Domain Radar
+
+- **Hover**: View exact mastery percentage for a domain
+- **Click**: (future) Filter concepts by domain
+
+### Mastery Timeline (Concept Detail)
+
+- **Hover**: View mastery range, score, and event type
+- **Click point**: Open full assessment detail with question, response, and feedback
+- **Navigate**: Use arrow buttons to move between assessments
+
+All charts are built with [Apache ECharts](https://echarts.apache.org/) and support:
+
+- Responsive resizing
+- Dark/light theme adaptation
+- Accessibility features (ARIA labels, keyboard navigation)
+
+## Performance Considerations
+
+Analytics charts use:
+
+- **Lazy loading**: Charts only render when Analytics tab is activated
+- **Throttled resize**: Chart resize handlers debounced to avoid thrashing
+- **Cached queries**: Snapshot data cached in sessionStorage for 5 minutes
+- **Incremental updates**: Real-time SSE updates only refresh affected charts
+
+For large histories (>500 assessments), timeline endpoints automatically limit results and provide pagination.

@@ -1,0 +1,486 @@
+---
+title: Status & Query Tools
+description: Query mastery state, ZPD frontier, and dismiss pending actions
+---
+
+## Overview
+
+Entendi provides three tools for querying and managing learning state:
+
+1. **`entendi_get_status`** - Query mastery state for specific concepts or get an overview
+2. **`entendi_get_zpd_frontier`** - Get concepts the user is ready to learn next
+3. **`entendi_dismiss`** - Dismiss pending probes or tutor sessions
+
+---
+
+## entendi_get_status
+
+Query mastery state for a specific concept or get an overview of all concepts.
+
+### Request Parameters
+
+<ParamField path="conceptId" type="string">
+  Optional concept identifier. If omitted, returns overview of all concepts.
+</ParamField>
+
+### Response Fields (Concept Detail)
+
+When `conceptId` is provided:
+
+<ResponseField name="concept" type="object" required>
+  Mastery state for the requested concept
+  
+  <Expandable title="Concept Detail Schema">
+    <ResponseField name="mastery" type="number" required>
+      P(mastery) from 0.0 to 1.0 (transformed from IRT `mu` via logistic function)
+    </ResponseField>
+    
+    <ResponseField name="sigma" type="number" required>
+      Uncertainty (standard deviation on IRT scale). Lower = more confident.
+    </ResponseField>
+    
+    <ResponseField name="assessmentCount" type="integer" required>
+      Total number of assessments (probes + tutor phases)
+    </ResponseField>
+    
+    <ResponseField name="lastAssessed" type="string">
+      ISO 8601 timestamp of last assessment (null if never assessed)
+    </ResponseField>
+    
+    <ResponseField name="tutoredCount" type="integer" required>
+      Number of assessments during tutor sessions
+    </ResponseField>
+    
+    <ResponseField name="untutoredCount" type="integer" required>
+      Number of standalone probe assessments
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Response Fields (Overview)
+
+When `conceptId` is omitted:
+
+<ResponseField name="overview" type="object" required>
+  Summary statistics across all concepts
+  
+  <Expandable title="Overview Schema">
+    <ResponseField name="totalConcepts" type="integer" required>
+      Total concepts in knowledge graph
+    </ResponseField>
+    
+    <ResponseField name="mastered" type="integer" required>
+      Concepts with P(mastery) ≥ 0.7
+    </ResponseField>
+    
+    <ResponseField name="inProgress" type="integer" required>
+      Assessed concepts with P(mastery) < 0.7
+    </ResponseField>
+    
+    <ResponseField name="unknown" type="integer" required>
+      Never-assessed concepts
+    </ResponseField>
+    
+    <ResponseField name="recentActivity" type="array" required>
+      5 most recently assessed concepts (format: `"{conceptId} ({timestamp})"`)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example 1: Get Concept Detail
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "redis/caching"
+}
+```
+
+```json Response
+{
+  "concept": {
+    "mastery": 0.847,
+    "sigma": 0.421,
+    "assessmentCount": 3,
+    "lastAssessed": "2026-03-02T10:15:23.456Z",
+    "tutoredCount": 0,
+    "untutoredCount": 3
+  }
+}
+```
+</CodeGroup>
+
+### Example 2: Get Overview
+
+<CodeGroup>
+```json Request
+{}
+```
+
+```json Response
+{
+  "overview": {
+    "totalConcepts": 47,
+    "mastered": 12,
+    "inProgress": 18,
+    "unknown": 17,
+    "recentActivity": [
+      "redis/caching (2026-03-02T10:15:23.456Z)",
+      "typescript/generics (2026-03-02T09:42:11.123Z)",
+      "docker/compose (2026-03-01T16:30:45.789Z)",
+      "git/rebase (2026-03-01T14:22:33.012Z)",
+      "react/hooks (2026-02-28T11:05:19.345Z)"
+    ]
+  }
+}
+```
+</CodeGroup>
+
+### Side Effects
+
+None. This is a read-only query (cached for 60 seconds).
+
+---
+
+## entendi_get_zpd_frontier
+
+Get the **Zone of Proximal Development (ZPD)** frontier: concepts the user is ready to learn next.
+
+### What is ZPD?
+
+The ZPD frontier returns concepts where:
+1. **All prerequisites are mastered** (P(mastery) ≥ threshold)
+2. **The concept itself is not yet mastered** (P(mastery) < threshold)
+3. **Sorted by Fisher information** (concepts with highest learning potential first)
+
+This enables **adaptive curriculum sequencing**.
+
+### Request Parameters
+
+<ParamField path="limit" type="integer" default="20">
+  Maximum concepts to return (1-100)
+</ParamField>
+
+<ParamField path="domain" type="string">
+  Filter by domain (e.g., `"frontend"`, `"databases"`, `"devops"`)
+</ParamField>
+
+<ParamField path="includeUnassessed" type="boolean" default="false">
+  Include never-assessed concepts (default: only in-progress concepts)
+</ParamField>
+
+### Response Fields
+
+<ResponseField name="frontier" type="array" required>
+  Concepts ready to learn, sorted by Fisher information (descending)
+  
+  <Expandable title="Frontier Item Schema">
+    <ResponseField name="conceptId" type="string" required>
+      Concept identifier
+    </ResponseField>
+    
+    <ResponseField name="mastery" type="number" required>
+      Current P(mastery) from 0.0 to 1.0
+    </ResponseField>
+    
+    <ResponseField name="fisherInfo" type="number" required>
+      Fisher information (learning potential). Higher = more informative to assess.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="totalConcepts" type="integer" required>
+  Total concepts in knowledge graph
+</ResponseField>
+
+<ResponseField name="masteredCount" type="integer" required>
+  Number of mastered concepts
+</ResponseField>
+
+### Example 1: Get ZPD Frontier (Default)
+
+<CodeGroup>
+```json Request
+{}
+```
+
+```json Response
+{
+  "frontier": [
+    {
+      "conceptId": "kubernetes/deployments",
+      "mastery": 0.412,
+      "fisherInfo": 2.847
+    },
+    {
+      "conceptId": "typescript/conditional-types",
+      "mastery": 0.358,
+      "fisherInfo": 2.623
+    },
+    {
+      "conceptId": "react/context",
+      "mastery": 0.521,
+      "fisherInfo": 2.401
+    }
+  ],
+  "totalConcepts": 47,
+  "masteredCount": 12
+}
+```
+</CodeGroup>
+
+### Example 2: Filter by Domain
+
+<CodeGroup>
+```json Request
+{
+  "domain": "databases",
+  "limit": 5
+}
+```
+
+```json Response
+{
+  "frontier": [
+    {
+      "conceptId": "postgres/indexes",
+      "mastery": 0.389,
+      "fisherInfo": 3.012
+    },
+    {
+      "conceptId": "redis/pub-sub",
+      "mastery": 0.445,
+      "fisherInfo": 2.756
+    }
+  ],
+  "totalConcepts": 47,
+  "masteredCount": 12
+}
+```
+</CodeGroup>
+
+### Example 3: Include Unassessed Concepts
+
+<CodeGroup>
+```json Request
+{
+  "includeUnassessed": true,
+  "limit": 10
+}
+```
+
+```json Response
+{
+  "frontier": [
+    {
+      "conceptId": "kubernetes/statefulsets",
+      "mastery": 0.500,
+      "fisherInfo": 3.141
+    },
+    {
+      "conceptId": "graphql/subscriptions",
+      "mastery": 0.500,
+      "fisherInfo": 3.141
+    }
+  ],
+  "totalConcepts": 47,
+  "masteredCount": 12
+}
+```
+</CodeGroup>
+
+<Note>
+Unassessed concepts default to `mu = 0.0` (50% mastery) and `sigma = 1.5` (high uncertainty), resulting in moderate Fisher information.
+</Note>
+
+### Side Effects
+
+None. This is a read-only query (cached for 60 seconds).
+
+### Use Cases
+
+1. **Adaptive Learning**: Suggest next concepts to study
+2. **Curriculum Planning**: Sequence learning based on prerequisites
+3. **Progress Visualization**: Show learning path on dashboard
+4. **Proactive Tutoring**: Offer lessons on ZPD frontier concepts
+
+---
+
+## entendi_dismiss
+
+Dismiss a pending probe or tutor session with a categorized reason.
+
+### Request Parameters
+
+<ParamField path="reason" type="enum" required>
+  Dismissal reason:
+  - `topic_change` - No penalty (conversation shifted topics naturally)
+  - `busy` - Re-queues probe for next session (auto-scores 0 after 3 deferrals)
+  - `claimed_expertise` - Auto-scores 0 immediately (user claims mastery without demonstration)
+</ParamField>
+
+<ParamField path="note" type="string">
+  Optional context about the dismissal (max 500 characters)
+</ParamField>
+
+### Response Fields
+
+<ResponseField name="acknowledged" type="boolean" required>
+  Always `true` (dismissal succeeded)
+</ResponseField>
+
+### Example 1: Topic Change (No Penalty)
+
+<CodeGroup>
+```json Request
+{
+  "reason": "topic_change",
+  "note": "User pivoted to debugging issue, probe no longer relevant"
+}
+```
+
+```json Response
+{
+  "acknowledged": true
+}
+```
+</CodeGroup>
+
+### Example 2: User Busy (Defer)
+
+<CodeGroup>
+```json Request
+{
+  "reason": "busy",
+  "note": "User asked to continue work, will probe later"
+}
+```
+
+```json Response
+{
+  "acknowledged": true
+}
+```
+</CodeGroup>
+
+### Example 3: Claimed Expertise (Auto-Score 0)
+
+<CodeGroup>
+```json Request
+{
+  "reason": "claimed_expertise",
+  "note": "User said 'I know Redis well' without demonstrating understanding"
+}
+```
+
+```json Response
+{
+  "acknowledged": true
+}
+```
+</CodeGroup>
+
+### Dismissal Reason Semantics
+
+| Reason | Effect | Use Case |
+|--------|--------|----------|
+| `topic_change` | Clear pending action, no scoring penalty | Conversation naturally shifted topics |
+| `busy` | Defer probe to next session, auto-score 0 after 3 deferrals | User prefers to continue work |
+| `claimed_expertise` | Auto-score 0 immediately (penalizes evasion) | User claims mastery but won't demonstrate |
+
+### Side Effects
+
+1. **Pending Action**: Clears `pending-action.json`
+2. **Probe Session**: Clears pending probe from session state
+3. **Tutor Session**: Clears active tutor session (if any)
+4. **Deferral Tracking**: Increments deferral count for `busy` reason
+5. **Auto-Scoring**: Records score=0 evaluation for `claimed_expertise` or 3rd `busy` deferral
+
+### Integration Pattern
+
+```typescript
+// User declines probe
+if (userDeclined) {
+  const reason = classifyDeclineReason(userMessage);
+  // "I'm busy" → busy
+  // "I already know this" → claimed_expertise
+  // "Let's talk about something else" → topic_change
+  
+  await mcpClient.callTool('entendi_dismiss', {
+    reason,
+    note: userMessage,
+  });
+}
+```
+
+---
+
+## Mastery Threshold
+
+All status tools use a **mastery threshold of 0.7** (70%) to classify concepts:
+
+```typescript
+const MASTERY_THRESHOLD = 0.7;
+
+if (pMastery >= 0.7) {
+  // Mastered
+} else if (assessmentCount > 0) {
+  // In progress
+} else {
+  // Unknown (never assessed)
+}
+```
+
+This threshold can be customized per organization via `orgPolicy.masteryThreshold`.
+
+---
+
+## Fisher Information
+
+The ZPD frontier sorts concepts by **Fisher information**, which measures how informative an assessment would be:
+
+```typescript
+function grmFisherInformation(mu: number, itemParams: GRMItemParams): number {
+  const { discrimination: a, thresholds: b } = itemParams;
+  
+  // Fisher info is sum of squared derivatives of response probabilities
+  let fisherInfo = 0;
+  for (const threshold of b) {
+    const p = 1 / (1 + Math.exp(-a * (mu - threshold)));
+    fisherInfo += (a ** 2) * p * (1 - p);
+  }
+  return fisherInfo;
+}
+```
+
+High Fisher information indicates:
+- **High uncertainty** (large `sigma`)
+- **Near decision boundary** (`mu` close to threshold)
+- **High discrimination** (steep IRT curve)
+
+---
+
+## Related Tools
+
+<CardGroup cols={2}>
+  <Card title="entendi_observe" icon="eye" href="/api/mcp/observe">
+    Trigger new probes
+  </Card>
+  <Card title="entendi_record_evaluation" icon="clipboard-check" href="/api/mcp/record-evaluation">
+    Update mastery state
+  </Card>
+  <Card title="entendi_start_tutor" icon="graduation-cap" href="/api/mcp/tutor">
+    Start tutoring for ZPD frontier concepts
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+- `entendi_get_status` definition: `src/mcp/server.ts:284-301`
+- `entendi_get_zpd_frontier` definition: `src/mcp/server.ts:304-327`
+- `entendi_dismiss` definition: `src/mcp/server.ts:259-280`
+- Implementation: `src/mcp/tools/query.ts`
+- Fisher information: `src/core/probabilistic-model.ts`
+- ZPD frontier: `src/core/knowledge-graph.ts`

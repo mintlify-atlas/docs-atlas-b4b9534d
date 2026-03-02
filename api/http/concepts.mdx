@@ -1,0 +1,338 @@
+---
+title: Concepts
+description: Manage concepts in the knowledge graph
+---
+
+Concepts represent units of knowledge in the Entendi system. Each concept has a unique ID, domain, specificity level, and optional prerequisites.
+
+## List Concepts
+
+Retrieve all concepts, optionally filtered by domain or search query.
+
+```bash GET /api/concepts
+curl https://api.entendi.dev/api/concepts
+```
+
+### Query Parameters
+
+<ParamField query="domain" type="string">
+  Filter concepts by domain (e.g., `mathematics`, `programming`, `general`)
+</ParamField>
+
+<ParamField query="search" type="string">
+  Search concepts by ID, domain, or aliases (case-insensitive partial match)
+</ParamField>
+
+### Response
+
+```json
+[
+  {
+    "id": "python-list-comprehensions",
+    "domain": "programming",
+    "specificity": "technique",
+    "aliases": ["list-comp", "python-comprehensions"],
+    "parentId": "python-basics",
+    "description": "Concise syntax for creating lists in Python",
+    "discrimination": 1.0,
+    "threshold1": -1.0,
+    "threshold2": 0.0,
+    "threshold3": 1.0,
+    "lifecycle": "discovered",
+    "createdAt": "2026-01-15T10:30:00.000Z",
+    "updatedAt": "2026-01-15T10:30:00.000Z"
+  }
+]
+```
+
+<ResponseField name="id" type="string" required>
+  Unique concept identifier (lowercase, hyphens, normalized)
+</ResponseField>
+
+<ResponseField name="domain" type="string" required>
+  Knowledge domain (e.g., `mathematics`, `programming`)
+</ResponseField>
+
+<ResponseField name="specificity" type="string" required>
+  Concept granularity: `domain`, `topic`, `technique`, `fact`
+</ResponseField>
+
+<ResponseField name="aliases" type="string[]" required>
+  Alternative names or identifiers for this concept
+</ResponseField>
+
+<ResponseField name="parentId" type="string">
+  Parent concept ID (if part of a hierarchy)
+</ResponseField>
+
+<ResponseField name="description" type="string" required>
+  Human-readable description
+</ResponseField>
+
+<ResponseField name="lifecycle" type="string" required>
+  Concept status: `discovered`, `validated`, `deprecated`
+</ResponseField>
+
+## Get Single Concept
+
+Retrieve a specific concept with its prerequisite edges.
+
+```bash GET /api/concepts/:id
+curl https://api.entendi.dev/api/concepts/python-list-comprehensions
+```
+
+### Response
+
+```json
+{
+  "id": "python-list-comprehensions",
+  "domain": "programming",
+  "specificity": "technique",
+  "aliases": ["list-comp"],
+  "parentId": "python-basics",
+  "description": "Concise syntax for creating lists in Python",
+  "discrimination": 1.0,
+  "lifecycle": "discovered",
+  "createdAt": "2026-01-15T10:30:00.000Z",
+  "updatedAt": "2026-01-15T10:30:00.000Z",
+  "edges": [
+    {
+      "sourceId": "python-list-comprehensions",
+      "targetId": "python-for-loops",
+      "edgeType": "requires",
+      "source": "manual"
+    }
+  ]
+}
+```
+
+<ResponseField name="edges" type="array" required>
+  Array of concept edges (relationships to other concepts)
+</ResponseField>
+
+<ResponseField name="edges[].sourceId" type="string" required>
+  Source concept ID (the current concept)
+</ResponseField>
+
+<ResponseField name="edges[].targetId" type="string" required>
+  Target concept ID (prerequisite or related concept)
+</ResponseField>
+
+<ResponseField name="edges[].edgeType" type="string" required>
+  Relationship type: `requires`, `relates_to`, `extends`
+</ResponseField>
+
+<ResponseField name="edges[].source" type="string" required>
+  How the edge was created: `manual`, `auto`, `inferred`
+</ResponseField>
+
+## Create or Update Concept
+
+<Note>
+  Requires authentication via API key or session.
+</Note>
+
+Create a new concept or update an existing one (upsert behavior).
+
+```bash POST /api/concepts
+curl -X POST https://api.entendi.dev/api/concepts \
+  -H "x-api-key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "python-list-comprehensions",
+    "domain": "programming",
+    "specificity": "technique",
+    "aliases": ["list-comp"],
+    "parentId": "python-basics"
+  }'
+```
+
+### Request Body
+
+<ParamField body="id" type="string" required>
+  Concept ID (will be normalized: lowercased, spaces/slashes replaced with hyphens, special chars removed)
+</ParamField>
+
+<ParamField body="domain" type="string" default="general">
+  Knowledge domain
+</ParamField>
+
+<ParamField body="specificity" type="string" default="topic">
+  Concept granularity level
+</ParamField>
+
+<ParamField body="aliases" type="string[]" default="[]">
+  Alternative names (merged with existing aliases on upsert)
+</ParamField>
+
+<ParamField body="parentId" type="string">
+  Parent concept ID
+</ParamField>
+
+### Response
+
+Returns the created or updated concept with status `201 Created` for new concepts or `200 OK` for updates.
+
+```json
+{
+  "id": "python-list-comprehensions",
+  "domain": "programming",
+  "specificity": "technique",
+  "aliases": ["list-comp"],
+  "parentId": "python-basics",
+  "description": "",
+  "discrimination": 1.0,
+  "lifecycle": "discovered",
+  "createdAt": "2026-03-02T10:00:00.000Z",
+  "updatedAt": "2026-03-02T10:00:00.000Z"
+}
+```
+
+## Batch Create/Update Concepts
+
+<Note>
+  Requires authentication.
+</Note>
+
+Create or update multiple concepts in a single request.
+
+```bash POST /api/concepts/batch
+curl -X POST https://api.entendi.dev/api/concepts/batch \
+  -H "x-api-key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "concepts": [
+      {
+        "id": "react-hooks",
+        "domain": "programming",
+        "specificity": "topic"
+      },
+      {
+        "id": "react-usestate",
+        "domain": "programming",
+        "specificity": "technique",
+        "parentId": "react-hooks"
+      }
+    ]
+  }'
+```
+
+### Request Body
+
+<ParamField body="concepts" type="array" required>
+  Array of concept objects (same schema as single create)
+</ParamField>
+
+### Response
+
+```json
+{
+  "created": 2,
+  "results": [
+    { "id": "react-hooks", "status": "ok" },
+    { "id": "react-usestate", "status": "ok" }
+  ]
+}
+```
+
+## Update Concept
+
+<Note>
+  Requires authentication.
+</Note>
+
+Update an existing concept's properties.
+
+```bash PUT /api/concepts/:id
+curl -X PUT https://api.entendi.dev/api/concepts/python-list-comprehensions \
+  -H "x-api-key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "python",
+    "aliases": ["list-comp", "python-comprehensions"]
+  }'
+```
+
+### Request Body
+
+<ParamField body="domain" type="string">
+  Update domain
+</ParamField>
+
+<ParamField body="specificity" type="string">
+  Update specificity level
+</ParamField>
+
+<ParamField body="aliases" type="string[]">
+  Replace aliases (not merged)
+</ParamField>
+
+<ParamField body="parentId" type="string | null">
+  Update or remove parent (use `null` to remove)
+</ParamField>
+
+### Response
+
+Returns the updated concept.
+
+## Create Concept Edge
+
+<Note>
+  Requires authentication.
+</Note>
+
+Create a relationship between two concepts (e.g., prerequisite).
+
+```bash POST /api/concepts/:id/edges
+curl -X POST https://api.entendi.dev/api/concepts/python-list-comprehensions/edges \
+  -H "x-api-key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetId": "python-for-loops",
+    "edgeType": "requires"
+  }'
+```
+
+### Request Body
+
+<ParamField body="targetId" type="string" required>
+  Target concept ID (prerequisite or related concept)
+</ParamField>
+
+<ParamField body="edgeType" type="string" required>
+  Edge type: `requires`, `relates_to`, `extends`
+</ParamField>
+
+### Response
+
+```json
+{
+  "ok": true
+}
+```
+
+## Get Prerequisites (Recursive)
+
+Retrieve all recursive prerequisites for a concept.
+
+```bash GET /api/concepts/:id/prerequisites
+curl https://api.entendi.dev/api/concepts/python-list-comprehensions/prerequisites
+```
+
+### Response
+
+```json
+[
+  { "concept_id": "python-for-loops", "depth": 1 },
+  { "concept_id": "python-variables", "depth": 2 },
+  { "concept_id": "python-basics", "depth": 3 }
+]
+```
+
+<ResponseField name="concept_id" type="string" required>
+  Prerequisite concept ID
+</ResponseField>
+
+<ResponseField name="depth" type="number" required>
+  Depth in the prerequisite tree (1 = direct prerequisite)
+</ResponseField>

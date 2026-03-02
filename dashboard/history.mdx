@@ -1,0 +1,301 @@
+---
+title: Session History & Events
+description: View your assessment timeline, event details, and response records
+---
+
+The Entendi dashboard provides comprehensive access to your **assessment history** — every probe, tutor session, and dismissal event recorded during your AI-assisted work.
+
+## Recent Activity (Overview Tab)
+
+The **Overview** tab displays your **15 most recent assessments** across all concepts.
+
+### Activity Table
+
+Each row shows:
+
+- **Concept**: Click to navigate to concept detail view
+- **Type**: Assessment type
+  - `Probe` — Single-question comprehension check
+  - `Tutor P1` — Phase 1 tutor (Socratic questioning)
+  - `Tutor P4` — Phase 4 tutor (practical application)
+- **Score**: Rubric score (0–3)
+  - `0/3` — No understanding
+  - `1/3` — Partial understanding
+  - `2/3` — Good understanding
+  - `3/3` — Complete understanding
+- **Mastery**: Before → After percentage with delta
+  - Green `+5%` — Improvement
+  - Red `−2%` — Decline
+  - Gray `±0%` — No change
+- **When**: Time ago (e.g., "5m ago", "2h ago", "3d ago")
+
+### Real-Time Updates
+
+The activity feed updates automatically via Server-Sent Events when:
+
+- You complete a new assessment in Claude Code
+- Mastery scores are recalculated
+- Background batch assessments finish
+
+No page refresh required.
+
+## Assessment Event Details
+
+Click any assessment to open a **detail panel** showing:
+
+### Event Metadata
+
+- **Event ID**: Unique identifier
+- **Timestamp**: Exact time of assessment
+- **Concept**: Full concept ID and domain
+- **Type**: Assessment type
+
+### Question & Response
+
+- **Question text**: The probe or tutor question asked
+- **Your response**: Full text of your answer
+- **Word count**: Length of response
+- **Response time**: How long you took to answer
+
+### Scoring
+
+- **Rubric score**: 0–3 assessment by LLM grader
+- **Rubric reasoning**: Explanation of score
+- **Integrity score**: Behavioral biometric analysis (0.0–1.0)
+  - `< 0.5` — Anomalous (possible AI assistance)
+  - `≥ 0.5` — Normal
+
+### Mastery Update
+
+- **Before**: `mu` and `sigma` before assessment
+- **After**: `mu` and `sigma` after assessment
+- **Delta**: Change in mastery percentage
+- **Confidence change**: How assessment reduced uncertainty
+
+### Navigation
+
+Event panels include:
+
+- **Previous/Next buttons**: Navigate chronologically through assessments
+- **Close**: Return to timeline view
+- **Copy event ID**: For support requests or API queries
+
+## Per-Concept History
+
+Viewing a concept's detail page shows **all assessments for that concept only**.
+
+### Timeline Chart
+
+The mastery timeline visualizes:
+
+- **Confidence band** (shaded): 95% interval (low–high)
+- **Mastery line**: Point estimate over time
+- **Event markers**: Clickable circles for each assessment
+
+Click any marker to open event details for that specific assessment.
+
+### Assessment History Table
+
+Chronological list of assessments for the concept, including:
+
+- Type, Score, Mastery change, Integrity, When
+- Click any row to open full event detail
+
+### Dismissal Events
+
+If you dismissed a probe for this concept, dismissals appear with:
+
+- **Reason badge**: Color-coded dismissal reason
+  - `busy` — Not enough time
+  - `irrelevant` — Concept not applicable
+  - `broken` — Probe was malformed
+- **Note**: Optional context you provided
+- **Requeued**: Whether the concept was added back to your queue
+
+## History API Endpoints
+
+### Global History
+
+```
+GET /api/history
+```
+
+Returns your most recent assessment events across all concepts.
+
+**Query Parameters:**
+
+- `limit` (default: 50, max: 200): Number of events to return
+
+**Response:**
+
+```json
+[
+  {
+    "id": "evt_123",
+    "userId": "user_abc",
+    "conceptId": "http/cors",
+    "eventType": "probe",
+    "questionText": "What headers are required for CORS?",
+    "responseText": "Access-Control-Allow-Origin...",
+    "rubricScore": 3,
+    "integrityScore": 0.92,
+    "muBefore": 0.5,
+    "muAfter": 0.65,
+    "createdAt": "2026-03-01T14:30:00Z"
+  }
+]
+```
+
+### Per-Concept History
+
+```
+GET /api/history/:conceptId
+```
+
+Returns assessment history for a specific concept (limit: 50).
+
+### Per-Event Detail
+
+```
+GET /api/mastery/:conceptId/history
+```
+
+Used internally by the dashboard to fetch detailed event data.
+
+## Dismissal Events
+
+When you dismiss a probe using `entendi_dismiss`, a **dismissal event** is recorded:
+
+```typescript
+interface DismissalEvent {
+  id: string;
+  userId: string;
+  conceptId: string;
+  reason: 'busy' | 'irrelevant' | 'broken';
+  note?: string;
+  requeued: boolean;
+  resolvedAs?: 'completed' | 'cancelled';
+  createdAt: string;
+}
+```
+
+### Viewing Dismissals
+
+Dismissals appear in:
+
+- **Concept timeline**: Interleaved with assessments
+- **Integrity tab**: If flagged for review
+
+### Dismissal Reasons
+
+- **Busy**: You didn't have time to answer
+  - Concept is requeued for later
+- **Irrelevant**: Concept doesn't apply to your work
+  - Concept priority lowered, not requeued immediately
+- **Broken**: Probe was malformed or nonsensical
+  - Logged for debugging, concept requeued with different probe
+
+## Integrity Events
+
+The **Integrity tab** shows assessments where behavioral anomalies were detected.
+
+### What Triggers Flagging?
+
+Integrity scoring analyzes:
+
+- **Response speed**: Unusually fast for length/complexity
+- **Vocabulary**: Sudden shifts in word choice or sophistication
+- **Patterns**: Copy-paste indicators, formatting anomalies
+
+### Integrity Trend Chart
+
+Line chart showing your integrity score over time:
+
+- **Green zone** (≥ 0.7): Normal
+- **Yellow zone** (0.5–0.7): Borderline
+- **Red zone** (< 0.5): Anomalous
+
+### Flagged Responses Table
+
+Shows assessments with `integrityScore < 0.5`:
+
+- Concept, Score, Integrity, When
+- Click to view full event detail and response text
+
+### Not a Ban System
+
+Flagged responses are **informational**, not punitive:
+
+- No automatic penalties
+- Used to identify patterns over time
+- Organization admins can view integrity metrics for team members
+
+## Event Timeline Consolidation
+
+The dashboard consolidates **three event types** into a unified timeline:
+
+1. **Assessment events** (`assessmentEvents` table)
+   - Probes, tutor sessions, evaluations
+2. **Dismissal events** (`dismissalEvents` table)
+   - Declined probes with reason
+3. **Tutor sessions** (`tutorSessions` table)
+   - Multi-turn interactive sessions
+
+All events are sorted chronologically and displayed with consistent formatting.
+
+## Exporting History
+
+Use the History API with your personal API key to export data:
+
+```bash
+curl -H "Authorization: Bearer YOUR_KEY" \
+  "https://entendi.dev/api/history?limit=200" > history.json
+```
+
+For full data export, use pagination:
+
+```bash
+# Get all history (up to 200 events per request)
+for i in {1..10}; do
+  curl -H "Authorization: Bearer YOUR_KEY" \
+    "https://entendi.dev/api/history?limit=200&offset=$((i*200))" \
+    >> full_history.json
+done
+```
+
+## Search and Filtering
+
+### Current Capabilities
+
+- Filter by concept (per-concept history view)
+- Filter by domain (Concepts tab)
+- Sort by recency (newest first)
+
+### Planned Features
+
+- Search by question/response keywords
+- Filter by score range
+- Filter by date range
+- Filter by integrity threshold
+- Export filtered results
+
+## Privacy and Data Retention
+
+Your assessment history is:
+
+- **Private**: Only you (and organization admins if in an org) can view it
+- **Retained indefinitely** while your account is active
+- **Deleted permanently** if you delete your account
+- **Not used for training**: Entendi does not train models on your responses
+
+See [Privacy Policy](https://entendi.dev/privacy) for details.
+
+## Organization History
+
+If you're an **organization admin**, you can view:
+
+- Aggregate assessment counts per member
+- Mastery distributions across the team
+- Individual member timelines (with permission)
+
+See [Organization Management](/organization) for details.

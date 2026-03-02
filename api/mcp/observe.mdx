@@ -1,0 +1,270 @@
+---
+title: entendi_observe
+description: Observe concepts detected after a tool use and determine if a comprehension probe is appropriate
+---
+
+## Overview
+
+The `entendi_observe` tool is the entry point for concept tracking. After the AI assistant uses a tool that involves specific concepts (e.g., installing a package, running a command, editing code), call this tool to:
+
+1. Register concept exposure in the knowledge graph
+2. Determine if a comprehension probe should be issued
+3. Get guidance on probe intrusiveness and user profile
+
+## Request Parameters
+
+<ParamField path="concepts" type="array" required>
+  Array of concepts detected in the triggering action
+  
+  <Expandable title="Concept Object Schema">
+    <ParamField path="id" type="string" required>
+      Concept identifier (e.g., `redis/caching`, `typescript/generics`, `git/rebase`)
+    </ParamField>
+    
+    <ParamField path="source" type="enum" required>
+      Detection source: `package` (package.json), `ast` (code analysis), or `llm` (LLM extraction)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="triggerContext" type="string" required>
+  Description of the action that triggered concept detection (e.g., `npm install redis`, `git rebase main`)
+</ParamField>
+
+<ParamField path="primaryConceptId" type="string">
+  Optional primary concept to prioritize for probing. If omitted, Fisher information selects the best candidate.
+</ParamField>
+
+## Response Fields
+
+<ResponseField name="shouldProbe" type="boolean" required>
+  Whether a comprehension probe should be issued now
+</ResponseField>
+
+<ResponseField name="conceptId" type="string">
+  Concept selected for probing (Fisher information maximization)
+</ResponseField>
+
+<ResponseField name="depth" type="integer">
+  Probe depth: `1` (novel/critical), `2` (adjacent), or `3` (routine)
+</ResponseField>
+
+<ResponseField name="intrusiveness" type="enum" required>
+  Recommended probe style:
+  - `direct` - Ask the probe question directly
+  - `woven` - Weave the probe into conversation naturally
+  - `skip` - Don't probe (rate limited or low priority)
+</ResponseField>
+
+<ResponseField name="guidance" type="string">
+  Suggested probe question (only present if `shouldProbe` is true)
+</ResponseField>
+
+<ResponseField name="userProfile" type="enum" required>
+  Computed user expertise level: `unknown`, `beginner`, `intermediate`, or `advanced`
+</ResponseField>
+
+## Behavior
+
+### Concept Selection
+
+When multiple concepts are provided, `entendi_observe` uses **Fisher information** from the Graded Response Model (GRM) to select the concept that would maximize learning from a probe. This prioritizes:
+
+- Concepts with **high uncertainty** (large σ)
+- Concepts near **decision boundaries** (μ ≈ 0)
+- Concepts with **high discrimination** (steep IRT curves)
+
+### Novelty Classification
+
+Selected concepts are classified by novelty:
+
+| Novelty Level | Criteria | Probe Depth |
+|---------------|----------|-------------|
+| **Novel** | Never assessed (`assessmentCount = 0`) | 1 |
+| **Adjacent** | Prerequisites mastered, concept not mastered | 2 |
+| **Routine** | Mastered and recently assessed | 3 |
+| **Critical** | Low mastery despite multiple assessments | 1 |
+
+### Intrusiveness Lookup
+
+Intrusiveness is determined by user profile and novelty:
+
+| User Profile | Novel | Adjacent | Routine | Critical |
+|--------------|-------|----------|---------|----------|
+| Unknown | direct | direct | skip | direct |
+| Beginner | direct | woven | skip | direct |
+| Intermediate | woven | woven | skip | woven |
+| Advanced | woven | skip | skip | woven |
+
+### Rate Limiting
+
+Probes are rate-limited per session:
+- **Minimum interval**: 2 minutes between probes
+- **Maximum per hour**: 15 probes
+
+Rate limits are checked before `shouldProbe` is set to `true`.
+
+## Examples
+
+### Example 1: First Exposure to a Concept
+
+<CodeGroup>
+```json Request
+{
+  "concepts": [
+    { "id": "redis/caching", "source": "package" }
+  ],
+  "triggerContext": "npm install redis"
+}
+```
+
+```json Response
+{
+  "shouldProbe": true,
+  "conceptId": "redis/caching",
+  "depth": 1,
+  "intrusiveness": "direct",
+  "guidance": "Ask about the core purpose and basic usage of redis caching",
+  "userProfile": "beginner"
+}
+```
+</CodeGroup>
+
+### Example 2: Multiple Concepts (Fisher Selection)
+
+<CodeGroup>
+```json Request
+{
+  "concepts": [
+    { "id": "typescript/generics", "source": "ast" },
+    { "id": "typescript/utility-types", "source": "ast" },
+    { "id": "typescript/conditional-types", "source": "llm" }
+  ],
+  "triggerContext": "Implementing generic utility function",
+  "primaryConceptId": "typescript/conditional-types"
+}
+```
+
+```json Response
+{
+  "shouldProbe": true,
+  "conceptId": "typescript/conditional-types",
+  "depth": 2,
+  "intrusiveness": "woven",
+  "guidance": "Ask about trade-offs and design decisions related to typescript conditional types",
+  "userProfile": "intermediate"
+}
+```
+</CodeGroup>
+
+### Example 3: Rate Limited
+
+<CodeGroup>
+```json Request
+{
+  "concepts": [
+    { "id": "docker/compose", "source": "package" }
+  ],
+  "triggerContext": "docker-compose up"
+}
+```
+
+```json Response
+{
+  "shouldProbe": false,
+  "conceptId": "docker/compose",
+  "intrusiveness": "skip",
+  "userProfile": "intermediate"
+}
+```
+</CodeGroup>
+
+### Example 4: Mastered Concept (No Probe)
+
+<CodeGroup>
+```json Request
+{
+  "concepts": [
+    { "id": "git/commit", "source": "ast" }
+  ],
+  "triggerContext": "git commit -m 'feat: add feature'"
+}
+```
+
+```json Response
+{
+  "shouldProbe": false,
+  "conceptId": "git/commit",
+  "intrusiveness": "skip",
+  "userProfile": "advanced"
+}
+```
+</CodeGroup>
+
+## Integration Pattern
+
+### PostToolUse Hook (Recommended)
+
+Call `entendi_observe` after every tool use with concept detection:
+
+```typescript
+// After tool use (e.g., npm install, git command, file edit)
+const concepts = detectConcepts(toolName, toolInput);
+
+if (concepts.length > 0) {
+  const result = await mcpClient.callTool('entendi_observe', {
+    concepts,
+    triggerContext: `${toolName} ${JSON.stringify(toolInput)}`,
+  });
+  
+  if (result.shouldProbe) {
+    // Issue probe based on intrusiveness
+    if (result.intrusiveness === 'direct') {
+      await askProbeQuestion(result.guidance);
+    } else if (result.intrusiveness === 'woven') {
+      await weaveProbeIntoResponse(result.guidance);
+    }
+  }
+}
+```
+
+## Side Effects
+
+1. **Knowledge Graph Update**: Creates concept nodes if they don't exist
+2. **Pending Action**: Writes `pending-action.json` with `awaiting_probe_response` if `shouldProbe` is true
+3. **Probe Session Tracking**: Updates `lastProbeTime` and `probesThisSession` counters
+4. **Cache Invalidation**: Invalidates `/api/mcp/status` and `/api/mcp/zpd-frontier` caches
+
+## Progress Notifications
+
+If the MCP client provides a `progressToken` and multiple concepts are sent, the tool emits progress notifications:
+
+```json
+{
+  "method": "notifications/progress",
+  "params": {
+    "progressToken": "abc123",
+    "progress": 3,
+    "total": 3,
+    "message": "Processed 3 concepts"
+  }
+}
+```
+
+## Related Tools
+
+<CardGroup cols={2}>
+  <Card title="entendi_record_evaluation" icon="clipboard-check" href="/api/mcp/record-evaluation">
+    Record the user's response to the probe
+  </Card>
+  <Card title="entendi_dismiss" icon="times-circle" href="/api/mcp/status">
+    Dismiss the pending probe if not appropriate
+  </Card>
+</CardGroup>
+
+## Source Code Reference
+
+- Tool definition: `src/mcp/server.ts:101-151`
+- Implementation: `src/mcp/tools/observe.ts:113-230`
+- Fisher information: `src/core/probabilistic-model.ts`
+- Probe scheduler: `src/core/probe-scheduler.ts`

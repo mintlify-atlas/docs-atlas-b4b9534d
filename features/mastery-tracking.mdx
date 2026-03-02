@@ -1,0 +1,478 @@
+---
+title: Mastery Tracking
+description: Bayesian mastery model and spaced repetition system
+---
+
+Entendi tracks your understanding of each concept using a **Bayesian mastery model** combined with **FSRS-based spaced repetition**. This dual-state system ensures probes are timed optimally and mastery estimates are accurate.
+
+## Dual-State Model
+
+Each user-concept pair maintains two independent states:
+
+### 1. Mastery State (IRT)
+
+**Implementation:** [`src/schemas/types.ts`](/workspace/source/src/schemas/types.ts:1-13)
+
+```typescript
+export interface MasteryState {
+  mu: number;       // Posterior mean (real line, IRT theta scale)
+  sigma: number;    // Posterior standard deviation (uncertainty)
+}
+
+export function createInitialMastery(): MasteryState {
+  return { mu: 0.0, sigma: 1.5 };
+}
+
+export function pMastery(mu: number): number {
+  return 1 / (1 + Math.exp(-mu));  // Logistic transform to [0,1] probability
+}
+```
+
+**Key properties:**
+
+- `mu` is the mastery level on the IRT (Item Response Theory) scale (real line, -∞ to +∞)
+- `sigma` represents uncertainty (higher = more uncertain)
+- Initial state: `mu = 0.0` (50% mastery), `sigma = 1.5` (high uncertainty)
+- `pMastery(mu)` converts theta to a probability via logistic function
+
+### 2. Memory State (FSRS)
+
+**Implementation:** [`src/schemas/types.ts`](/workspace/source/src/schemas/types.ts:15-23)
+
+```typescript
+export interface MemoryState {
+  stability: number;   // S: days until retrievability drops to 90%
+  difficulty: number;  // D: 1-10 scale (higher = harder to retain)
+}
+
+export function createInitialMemory(): MemoryState {
+  return { stability: 1.0, difficulty: 5.0 };
+}
+```
+
+**Key properties:**
+
+- `stability` (S): time in days until retrievability R drops to 90%
+- `difficulty` (D): intrinsic difficulty of this concept for this user (1-10)
+- Initial state: S=1.0 day, D=5.0 (neutral difficulty)
+
+## Graded Response Model (GRM)
+
+Entendi uses the **Graded Response Model** from Item Response Theory to update mastery based on rubric scores.
+
+### Item Parameters
+
+Each concept has calibrated **item parameters** that control how probe scores map to mastery:
+
+**Implementation:** [`src/schemas/types.ts`](/workspace/source/src/schemas/types.ts:25-34)
+
+```typescript
+export interface GRMItemParams {
+  discrimination: number;                    // a: slope of response curve
+  thresholds: [number, number, number];      // b1, b2, b3: difficulty thresholds
+}
+
+export const DEFAULT_GRM_PARAMS: GRMItemParams = {
+  discrimination: 1.0,      // Standard discrimination
+  thresholds: [-1.0, 0.0, 1.0],  // b1 < b2 < b3
+};
+```
+
+**What they mean:**
+
+- **discrimination** (`a`): How sharply the item distinguishes between mastery levels. Higher values mean the item is more informative.
+- **thresholds** (`b1, b2, b3`): The theta values where P(score ≥ k) = 0.5. These map rubric scores to mastery levels.
+
+### Category Probabilities
+
+The GRM computes the probability of each rubric score (0, 1, 2, 3) given a mastery level theta:
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:74-116)
+
+```typescript
+function logistic(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * Boundary Response Function: P*(k | theta) = logistic(a * (theta - b_k))
+ * Returns cumulative probabilities for boundaries 1..K (K=3 for 4 categories).
+ */
+function brf(theta: number, a: number, b: [number, number, number]): [number, number, number] {
+  return [
+    logistic(a * (theta - b[0])),
+    logistic(a * (theta - b[1])),
+    logistic(a * (theta - b[2])),
+  ];
+}
+
+/**
+ * Category probabilities for scores 0, 1, 2, 3.
+ * P_0 = 1 - P*_1, P_1 = P*_1 - P*_2, P_2 = P*_2 - P*_3, P_3 = P*_3 - 0
+ */
+export function grmCategoryProbs(
+  theta: number,
+  itemParams: GRMItemParams = DEFAULT_GRM_PARAMS,
+): [number, number, number, number] {
+  const { discrimination: a, thresholds: b } = itemParams;
+  const pStar = brf(theta, a, b);
+
+  return [
+    Math.max(EPSILON, 1.0 - pStar[0]),
+    Math.max(EPSILON, pStar[0] - pStar[1]),
+    Math.max(EPSILON, pStar[1] - pStar[2]),
+    Math.max(EPSILON, pStar[2]),
+  ];
+}
+```
+
+**Example:** For theta=0.0 (neutral mastery) and default parameters:
+
+```
+P(score=0 | theta=0) ≈ 0.27
+P(score=1 | theta=0) ≈ 0.23
+P(score=2 | theta=0) ≈ 0.23
+P(score=3 | theta=0) ≈ 0.27
+```
+
+### Bayesian Update
+
+When the user answers a probe and receives a rubric score, Entendi updates their mastery using **MAP estimation with Laplace approximation**:
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:118-245)
+
+```typescript
+/**
+ * GRM Bayesian update via Newton-Raphson MAP estimation with Laplace approximation.
+ *
+ * Finds the MAP estimate of theta given a single observation (score s),
+ * a Normal prior N(priorMu, priorSigma^2), and GRM item parameters.
+ * Then uses the Hessian curvature at the MAP for the Laplace posterior variance.
+ */
+export function grmBayesianUpdate(
+  score: RubricScore,
+  priorMu: number,
+  priorSigma: number,
+  itemParams: GRMItemParams = DEFAULT_GRM_PARAMS,
+): GRMUpdateResult {
+  const { discrimination: a, thresholds: b } = itemParams;
+  const s = score as number; // 0, 1, 2, 3
+
+  const sigmaEff = Math.max(SIGMA_MIN, Math.min(SIGMA_MAX, priorSigma));
+  const sigmaEff2 = sigmaEff * sigmaEff;
+
+  let theta = priorMu;
+  let converged = false;
+  let iter = 0;
+
+  // Newton-Raphson iteration to find MAP
+  for (iter = 0; iter < NR_MAX_ITER; iter++) {
+    // Compute cumulative boundary probabilities and derivatives
+    const pStar: number[] = [1.0, 0, 0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      pStar[k + 1] = logistic(a * (theta - b[k]));
+    }
+    pStar[4] = 0.0;
+
+    const Ps = Math.max(EPSILON, pStar[s] - pStar[s + 1]);
+
+    // First derivatives of boundary response functions
+    const Q: number[] = [0, 0, 0, 0, 0];
+    for (let k = 1; k <= 3; k++) {
+      Q[k] = a * pStar[k] * (1 - pStar[k]);
+    }
+
+    // Second derivatives
+    const R: number[] = [0, 0, 0, 0, 0];
+    for (let k = 1; k <= 3; k++) {
+      R[k] = a * a * pStar[k] * (1 - pStar[k]) * (1 - 2 * pStar[k]);
+    }
+
+    // Log-likelihood gradient and hessian
+    const llGrad = (Q[s] - Q[s + 1]) / Ps;
+    const llHess = (R[s] - R[s + 1]) / Ps - llGrad * llGrad;
+
+    // Prior gradient and hessian
+    const priorGrad = -(theta - priorMu) / sigmaEff2;
+    const priorHess = -1.0 / sigmaEff2;
+
+    // Total posterior gradient and hessian
+    const grad = llGrad + priorGrad;
+    const hess = llHess + priorHess;
+
+    // Newton step
+    if (hess >= 0) break; // Hessian not negative definite
+
+    let step = -grad / hess;
+    if (Math.abs(step) > NR_MAX_STEP) {
+      step = Math.sign(step) * NR_MAX_STEP;
+    }
+
+    theta = theta + step;
+
+    if (Math.abs(step) < NR_TOLERANCE) {
+      converged = true;
+      iter++;
+      break;
+    }
+  }
+
+  // Compute final Hessian at MAP for Laplace approximation
+  const pStarFinal: number[] = [1.0, 0, 0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    pStarFinal[k + 1] = logistic(a * (theta - b[k]));
+  }
+  pStarFinal[4] = 0.0;
+
+  const PsFinal = Math.max(EPSILON, pStarFinal[s] - pStarFinal[s + 1]);
+
+  const QFinal: number[] = [0, 0, 0, 0, 0];
+  for (let k = 1; k <= 3; k++) {
+    QFinal[k] = a * pStarFinal[k] * (1 - pStarFinal[k]);
+  }
+
+  const RFinal: number[] = [0, 0, 0, 0, 0];
+  for (let k = 1; k <= 3; k++) {
+    RFinal[k] = a * a * pStarFinal[k] * (1 - pStarFinal[k]) * (1 - 2 * pStarFinal[k]);
+  }
+
+  const llGradFinal = (QFinal[s] - QFinal[s + 1]) / PsFinal;
+  const llHessFinal = (RFinal[s] - RFinal[s + 1]) / PsFinal - llGradFinal * llGradFinal;
+  const totalHess = llHessFinal + (-1.0 / sigmaEff2);
+
+  // Laplace posterior sigma: sqrt(-1/hessian_at_MAP)
+  let postSigma: number;
+  if (totalHess >= 0) {
+    postSigma = sigmaEff; // fallback
+  } else {
+    postSigma = Math.sqrt(-1.0 / totalHess);
+  }
+
+  postSigma = Math.max(SIGMA_MIN, Math.min(SIGMA_MAX, postSigma));
+
+  return {
+    mu: theta,
+    sigma: postSigma,
+    converged,
+    iterations: iter,
+  };
+}
+```
+
+**What it does:**
+
+1. Uses Newton-Raphson to find the MAP (maximum a posteriori) estimate of theta
+2. Combines the likelihood from the GRM with a Normal prior N(priorMu, priorSigma²)
+3. Computes the Hessian at the MAP to estimate posterior uncertainty (Laplace approximation)
+4. Returns updated `mu` and `sigma`
+
+### Fisher Information
+
+The **expected Fisher information** measures how informative a probe is at a given mastery level:
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:266-295)
+
+```typescript
+/**
+ * Expected Fisher information at theta for a GRM item.
+ * I(theta) = sum_{k=0..3} (dP_k/dtheta)^2 / P_k
+ */
+export function grmFisherInformation(
+  theta: number,
+  itemParams: GRMItemParams = DEFAULT_GRM_PARAMS,
+): number {
+  const { discrimination: a, thresholds: b } = itemParams;
+
+  // Cumulative boundary probabilities
+  const pStar = [1.0, 0, 0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    pStar[k + 1] = logistic(a * (theta - b[k]));
+  }
+  pStar[4] = 0.0;
+
+  // Boundary first derivatives: Q_k = a * P*_k * (1-P*_k)
+  const Q = [0, 0, 0, 0, 0];
+  for (let k = 1; k <= 3; k++) {
+    Q[k] = a * pStar[k] * (1 - pStar[k]);
+  }
+
+  // Fisher info: sum over categories k=0..3 of (dP_k/dtheta)^2 / P_k
+  let info = 0;
+  for (let k = 0; k <= 3; k++) {
+    const Pk = Math.max(EPSILON, pStar[k] - pStar[k + 1]);
+    const dPk = Q[k] - Q[k + 1];
+    info += (dPk * dPk) / Pk;
+  }
+
+  return info;
+}
+```
+
+**Usage:** This is used to calculate **information gain** when selecting which concept to probe.
+
+## Spaced Repetition (FSRS)
+
+Entendi uses a simplified version of **FSRS-4.5** (Free Spaced Repetition Scheduler) to determine when to probe each concept.
+
+### Retrievability
+
+**Retrievability** (R) is the probability you can still recall the concept at time t:
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:3-12)
+
+```typescript
+const DECAY = -0.5;
+const FACTOR = 19 / 81; // calibrated so R(S, S) = 0.9
+
+/** Power-law forgetting curve. Returns probability of recall at time t (days). */
+export function retrievability(t: number, S: number): number {
+  if (t <= 0) return 1.0;
+  if (S <= 0) return 0.0;
+  return (1 + FACTOR * t / S) ** DECAY;
+}
+```
+
+**What it means:**
+
+- `t` = days since last assessment
+- `S` = stability (days until R=90%)
+- `R(t, S)` decays as a power law (more realistic than exponential)
+
+**Example:** If S=10 days and t=10 days, R ≈ 0.9 (90% recall).
+
+### Prior Decay
+
+As retrievability decays, the posterior mastery estimate **regresses toward the prior**:
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:14-23)
+
+```typescript
+const PRIOR_MU = 0.0;
+const PRIOR_SIGMA = 1.5;
+
+/** Blend posterior with initial prior based on retrievability. */
+export function decayPrior(mu: number, sigma: number, R: number): MasteryState {
+  return {
+    mu: R * mu + (1 - R) * PRIOR_MU,
+    sigma: R * sigma + (1 - R) * PRIOR_SIGMA,
+  };
+}
+```
+
+**What it does:**
+
+- If R=1.0 (just assessed), mastery = posterior estimate
+- If R=0.0 (totally forgotten), mastery = prior (mu=0, sigma=1.5)
+- Interpolates linearly for intermediate R
+
+This ensures old assessments don't overestimate current mastery.
+
+### Stability Update
+
+After a successful probe (score ≥ 2), stability increases:
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:38-44)
+
+```typescript
+export function fsrsStabilityAfterSuccess(S: number, D: number, R: number, grade: 1 | 2 | 3 | 4): number {
+  const hardPenalty = grade === 2 ? 0.6 : 1;
+  const easyBonus = grade === 4 ? 1.9 : 1;
+  const newS = S * (1 + Math.exp(1.87) * (11 - D) ** 1 * S ** -0.17 * (Math.exp(0.8 * (1 - R)) - 1) * hardPenalty * easyBonus);
+  return Math.max(0.1, newS);
+}
+```
+
+**Key factors:**
+
+- **Hard penalty** (grade=2): Reduces stability increase for marginal passes
+- **Easy bonus** (grade=4): Boosts stability for strong performance
+- **Difficulty** (D): Harder concepts have slower stability growth
+- **Retrievability** (R): Lower R means more learning, higher stability boost
+
+**Note:** Rubric scores (0-3) are mapped to FSRS grades (1-4) by adding 1.
+
+### Difficulty Update
+
+**Implementation:** [`src/core/probabilistic-model.ts`](/workspace/source/src/core/probabilistic-model.ts:46-56)
+
+```typescript
+export function fsrsDifficultyUpdate(D: number, grade: 1 | 2 | 3 | 4): number {
+  const w6 = 3.0;
+  const w7 = 0.001;
+  const D0_easy = 2.5;
+  const deltaD = -w6 * (grade - 3);
+  const damped = deltaD * (10 - D) / 9;
+  const nextD = D + damped;
+  const reverted = w7 * D0_easy + (1 - w7) * nextD;
+  return Math.max(1, Math.min(10, reverted));
+}
+```
+
+**What it does:**
+
+- Score 3-4: Difficulty decreases (concept getting easier)
+- Score 1-2: Difficulty increases (concept proving harder)
+- Damped to prevent extreme difficulty values
+- Mean-reverted slightly toward D=2.5
+
+## Assessment Events
+
+Every probe or tutor assessment is recorded in the concept history:
+
+**Implementation:** [`src/schemas/types.ts`](/workspace/source/src/schemas/types.ts:107-118)
+
+```typescript
+export type AssessmentEventType = 'probe' | 'tutor_phase1' | 'tutor_phase4' | 'implicit';
+
+export interface AssessmentEvent {
+  timestamp: string;
+  eventType: AssessmentEventType;
+  rubricScore: 0 | 1 | 2 | 3;
+  evaluatorConfidence: number;  // LLM evaluator confidence
+  muBefore: number;             // Mastery before this event
+  muAfter: number;              // Mastery after update
+  probeDepth: 0 | 1 | 2 | 3;    // Cognitive depth level
+  tutored: boolean;             // Was this during a tutor session?
+}
+```
+
+**Event types:**
+
+- **probe**: Standalone comprehension probe
+- **tutor_phase1**: Baseline assessment at start of tutoring
+- **tutor_phase4**: Final assessment after tutoring
+- **implicit**: Inferred from observation without explicit probe
+
+This history enables:
+
+- Learning trajectory visualization
+- Tutoring efficacy analysis (phase1 vs phase4 scores)
+- Concept difficulty calibration
+
+## Probe Selection Algorithm
+
+When `entendi_observe` is called, the system selects which concept to probe using this algorithm:
+
+1. **Filter by retrievability**: Only consider concepts where R < 0.9 (due for review)
+2. **Calculate information gain**: For each concept, compute expected Fisher information at current theta
+3. **Apply primary concept boost**: If `primaryConceptId` is specified, multiply its info-gain by 2.0
+4. **Rank by info-gain**: Select the concept with highest expected information gain
+5. **Return probe decision**: If a concept is selected, return `shouldProbe: true` with probe details
+
+This ensures probing is:
+
+- **Timely** (spaced repetition)
+- **Informative** (high uncertainty = high value)
+- **Context-aware** (primary concept prioritized)
+
+## Zone of Proximal Development (ZPD)
+
+The **ZPD frontier** identifies concepts the user is ready to learn — not too easy, not too hard:
+
+**Criteria:**
+
+- Prerequisites are mastered (P(mastery) > 0.7)
+- Concept itself is not yet mastered (P(mastery) < 0.7)
+- Moderate uncertainty (sigma > 0.5, indicating room for growth)
+
+This powers the `entendi_get_zpd_frontier` MCP tool, which suggests what to learn next.

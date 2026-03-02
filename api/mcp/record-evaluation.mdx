@@ -1,0 +1,335 @@
+---
+title: entendi_record_evaluation
+description: Record the evaluation of a probe or tutor response and update the knowledge graph with Bayesian scoring
+---
+
+## Overview
+
+The `entendi_record_evaluation` tool updates mastery state after a comprehension probe or tutor phase. It uses:
+
+- **Bayesian inference** with the Graded Response Model (GRM) to update mastery (`mu`, `sigma`)
+- **Time decay** (FSRS) to adjust for forgetting since last assessment
+- **Counterfactual tracking** to separate tutored vs. untutored mastery
+- **Tutor triggering** to determine if Socratic tutoring should be offered
+
+## Request Parameters
+
+<ParamField path="conceptId" type="string" required>
+  Concept identifier (must match the pending probe or tutor session)
+</ParamField>
+
+<ParamField path="score" type="integer" required>
+  Rubric score from 0-3:
+  - `0` - None: No understanding demonstrated
+  - `1` - Minimal: Vague or incorrect understanding
+  - `2` - Functional: Correct usage without deep understanding
+  - `3` - Deep: Comprehensive understanding including trade-offs and edge cases
+</ParamField>
+
+<ParamField path="confidence" type="number" required>
+  Evaluator confidence in the score (0.0 to 1.0). Higher confidence → larger mastery update.
+</ParamField>
+
+<ParamField path="reasoning" type="string" required>
+  Explanation for the score (stored in assessment history for audit trail)
+</ParamField>
+
+<ParamField path="eventType" type="enum" required>
+  Assessment context:
+  - `probe` - Standalone comprehension probe
+  - `tutor_phase1` - Tutor session phase 1 (initial assessment)
+  - `tutor_phase4` - Tutor session phase 4 (final assessment)
+</ParamField>
+
+<ParamField path="probeToken" type="object">
+  Cryptographically signed probe token (optional but recommended for probe events)
+  
+  <Expandable title="Probe Token Schema">
+    <ParamField path="tokenId" type="string" required>
+      Unique token identifier
+    </ParamField>
+    
+    <ParamField path="userId" type="string" required>
+      User ID (must match authenticated user)
+    </ParamField>
+    
+    <ParamField path="conceptId" type="string" required>
+      Concept ID (must match request)
+    </ParamField>
+    
+    <ParamField path="depth" type="integer" required>
+      Probe depth (1, 2, or 3)
+    </ParamField>
+    
+    <ParamField path="evaluationCriteria" type="string" required>
+      Rubric criteria for this probe
+    </ParamField>
+    
+    <ParamField path="issuedAt" type="string" required>
+      ISO 8601 timestamp when token was issued
+    </ParamField>
+    
+    <ParamField path="expiresAt" type="string" required>
+      ISO 8601 expiration timestamp (typically 1 hour)
+    </ParamField>
+    
+    <ParamField path="signature" type="string" required>
+      HMAC-SHA256 signature (prevents tampering)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="responseText" type="string">
+  User's verbatim response (stored for future analysis and misconception detection)
+</ParamField>
+
+## Response Fields
+
+<ResponseField name="mastery" type="number" required>
+  Updated P(mastery) after Bayesian update (0.0 to 1.0)
+</ResponseField>
+
+<ResponseField name="previousMastery" type="number" required>
+  P(mastery) before this evaluation (0.0 to 1.0)
+</ResponseField>
+
+<ResponseField name="shouldOfferTutor" type="boolean" required>
+  Whether Socratic tutoring should be offered (only for `eventType: "probe"`)
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable summary (e.g., "Mastery improved from 35.2% to 58.7%")
+</ResponseField>
+
+## Bayesian Update Process
+
+### 1. Time Decay (FSRS)
+
+If the concept was previously assessed, apply forgetting curve:
+
+```typescript
+function applyTimeDecay(mu: number, sigma: number, daysSince: number, stability: number): { mu: number, sigma: number } {
+  const retrievability = Math.exp(-daysSince / stability);
+  const decayedMu = mu * retrievability;
+  const decayedSigma = Math.sqrt(sigma ** 2 + (1 - retrievability) * 0.5);
+  return { mu: decayedMu, sigma: decayedSigma };
+}
+```
+
+### 2. GRM Likelihood
+
+Compute probability of observing score `k` given mastery `θ`:
+
+```typescript
+function grmProbability(score: 0 | 1 | 2 | 3, theta: number, itemParams: GRMItemParams): number {
+  const { discrimination: a, thresholds: b } = itemParams;
+  
+  // P(Y ≥ k | θ) = 1 / (1 + exp(-a(θ - b[k-1])))
+  const pAbove = (k: number) => k === 0 ? 1 : 1 / (1 + Math.exp(-a * (theta - b[k - 1])));
+  
+  return pAbove(score) - pAbove(score + 1);
+}
+```
+
+### 3. Posterior Update
+
+Combine prior (time-decayed mastery) with likelihood (GRM) using Laplace approximation:
+
+```typescript
+function bayesianUpdate(prior: { mu: number, sigma: number }, score: number, confidence: number, itemParams: GRMItemParams) {
+  // Log-posterior = log-prior + confidence * log-likelihood
+  const logPosterior = (theta: number) => {
+    const logPrior = -0.5 * ((theta - prior.mu) / prior.sigma) ** 2;
+    const logLikelihood = Math.log(grmProbability(score, theta, itemParams));
+    return logPrior + confidence * logLikelihood;
+  };
+  
+  // Find MAP estimate and compute Hessian for σ
+  const map = findMaximum(logPosterior);
+  const hessian = numericalHessian(logPosterior, map);
+  const posteriorSigma = 1 / Math.sqrt(-hessian);
+  
+  return { mu: map, sigma: posteriorSigma };
+}
+```
+
+### 4. Counterfactual Tracking
+
+If `eventType` is `tutor_phase1` or `tutor_phase4`, maintain separate untutored estimates:
+
+```typescript
+if (eventType === 'tutor_phase1') {
+  // Record pre-tutoring mastery as untutored baseline
+  ucs.muUntutored = ucs.mastery.mu;
+  ucs.sigmaUntutored = ucs.mastery.sigma;
+} else if (eventType === 'tutor_phase4') {
+  // Don't update untutored estimates (shows tutoring effect)
+  ucs.tutoredAssessmentCount++;
+} else {
+  // Regular probe: update both tutored and untutored
+  ucs.muUntutored = posterior.mu;
+  ucs.sigmaUntutored = posterior.sigma;
+  ucs.untutoredAssessmentCount++;
+}
+```
+
+## Tutor Triggering
+
+For `eventType: "probe"`, determine if tutoring should be offered:
+
+| Tutor Mode | Trigger Condition |
+|------------|-------------------|
+| `manual` | Never auto-trigger |
+| `reactive` | `score ≤ tutorTriggerThreshold` |
+| `proactive` | Always offer tutoring |
+
+Default: `reactive` with `tutorTriggerThreshold: 1` (trigger on scores 0-1).
+
+## Examples
+
+### Example 1: Probe with High Score
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "redis/caching",
+  "score": 3,
+  "confidence": 0.9,
+  "reasoning": "Demonstrated deep understanding of cache invalidation strategies and trade-offs",
+  "eventType": "probe",
+  "responseText": "Redis caching is ideal for frequently accessed data. You need to consider TTL, eviction policies like LRU, and cache stampede prevention..."
+}
+```
+
+```json Response
+{
+  "mastery": 0.847,
+  "previousMastery": 0.512,
+  "shouldOfferTutor": false,
+  "message": "Mastery improved from 51.2% to 84.7%"
+}
+```
+</CodeGroup>
+
+### Example 2: Probe with Low Score (Triggers Tutor)
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "typescript/generics",
+  "score": 0,
+  "confidence": 0.85,
+  "reasoning": "Could not explain type parameters or constraints",
+  "eventType": "probe",
+  "responseText": "Generics... I think they're like templates in other languages?"
+}
+```
+
+```json Response
+{
+  "mastery": 0.124,
+  "previousMastery": 0.500,
+  "shouldOfferTutor": true,
+  "message": "Mastery decreased from 50.0% to 12.4%"
+}
+```
+</CodeGroup>
+
+### Example 3: Tutor Phase 1 Assessment
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "docker/compose",
+  "score": 1,
+  "confidence": 0.75,
+  "reasoning": "Knows it orchestrates containers but can't explain services or volumes",
+  "eventType": "tutor_phase1",
+  "responseText": "Docker Compose runs multiple containers together, I think?"
+}
+```
+
+```json Response
+{
+  "mastery": 0.287,
+  "previousMastery": 0.500,
+  "shouldOfferTutor": false,
+  "message": "Mastery decreased from 50.0% to 28.7%"
+}
+```
+</CodeGroup>
+
+### Example 4: Tutor Phase 4 Final Assessment
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "docker/compose",
+  "score": 3,
+  "confidence": 0.95,
+  "reasoning": "Comprehensive explanation including services, networks, volumes, and depends_on",
+  "eventType": "tutor_phase4",
+  "responseText": "Docker Compose defines services in YAML with images, ports, volumes, networks. depends_on controls startup order. Volumes persist data..."
+}
+```
+
+```json Response
+{
+  "mastery": 0.891,
+  "previousMastery": 0.287,
+  "shouldOfferTutor": false,
+  "message": "Mastery improved from 28.7% to 89.1%"
+}
+```
+</CodeGroup>
+
+## Side Effects
+
+1. **Mastery Update**: Updates `mu`, `sigma` for the concept's user state
+2. **Memory Update**: Updates FSRS `stability` and `difficulty` based on performance
+3. **Assessment History**: Appends `AssessmentEvent` to `history` array
+4. **Pending Action**: Clears `awaiting_probe_response` pending action
+5. **Tutor Offer**: Writes `tutor_offered` pending action if `shouldOfferTutor` is true
+6. **Cache Invalidation**: Invalidates `/api/mcp/status` and `/api/mcp/zpd-frontier` caches
+
+## Integration Pattern
+
+```typescript
+// After user responds to probe
+const evaluation = await llm.evaluateResponse(userResponse, probeCriteria);
+
+const result = await mcpClient.callTool('entendi_record_evaluation', {
+  conceptId: pendingProbe.conceptId,
+  score: evaluation.score,
+  confidence: evaluation.confidence,
+  reasoning: evaluation.reasoning,
+  eventType: 'probe',
+  responseText: userResponse,
+});
+
+if (result.shouldOfferTutor) {
+  await offerTutorSession(pendingProbe.conceptId);
+}
+```
+
+## Related Tools
+
+<CardGroup cols={2}>
+  <Card title="entendi_observe" icon="eye" href="/api/mcp/observe">
+    Issue the initial probe
+  </Card>
+  <Card title="entendi_start_tutor" icon="graduation-cap" href="/api/mcp/tutor">
+    Start tutoring if shouldOfferTutor is true
+  </Card>
+  <Card title="entendi_get_status" icon="chart-line" href="/api/mcp/status">
+    View updated mastery state
+  </Card>
+</CardGroup>
+
+## Source Code Reference
+
+- Tool definition: `src/mcp/server.ts:154-197`
+- Implementation: `src/mcp/tools/record-evaluation.ts:27-81`
+- Bayesian update: `src/mcp/tools/shared-update.ts`
+- GRM model: `src/core/probabilistic-model.ts`
+- FSRS decay: `src/core/probabilistic-model.ts`

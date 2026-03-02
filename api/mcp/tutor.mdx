@@ -1,0 +1,414 @@
+---
+title: Tutor Tools
+description: Start and advance 4-phase Socratic tutor sessions
+---
+
+## Overview
+
+Entendi provides **reactive tutoring** via two MCP tools:
+
+1. **`entendi_start_tutor`** - Begin a 4-phase Socratic tutor session
+2. **`entendi_advance_tutor`** - Progress through tutor phases based on user responses
+
+Tutor sessions use a **zone of proximal development (ZPD)** approach, checking prerequisites and adapting difficulty based on learner performance.
+
+## Tutor Session Phases
+
+| Phase | Purpose | Scored? | Action |
+|-------|---------|---------|--------|
+| `phase1` | **Assess** prior knowledge | ✅ Yes | Ask open-ended question about understanding |
+| `phase2` | **Guide** toward deeper understanding | ❌ No | Identify gaps, provide scaffolding |
+| `phase3` | **Address** misconceptions | ❌ No | Correct misunderstandings, fill knowledge gaps |
+| `phase4` | **Evaluate** comprehensive understanding | ✅ Yes | Ask for complete explanation |
+| `complete` | Session finished | N/A | Compare phase1 vs phase4 scores |
+
+---
+
+## entendi_start_tutor
+
+Start a Socratic tutor session for a concept.
+
+### Request Parameters
+
+<ParamField path="conceptId" type="string" required>
+  Concept identifier (e.g., `docker/compose`, `typescript/generics`)
+</ParamField>
+
+<ParamField path="triggerScore" type="integer">
+  Probe score that triggered tutoring (0 or 1). Pass `null` if manually initiated.
+</ParamField>
+
+### Response Fields
+
+<ResponseField name="sessionId" type="string" required>
+  Unique session identifier (UUID). Use this in subsequent `entendi_advance_tutor` calls.
+</ResponseField>
+
+<ResponseField name="phase" type="string" required>
+  Current phase (always `"phase1"` after start)
+</ResponseField>
+
+<ResponseField name="guidance" type="string" required>
+  Phase-specific guidance for the AI tutor. Example: "Assess what the user already knows about docker/compose. Ask an open-ended question about their understanding."
+</ResponseField>
+
+<ResponseField name="prerequisiteSuggestion" type="string">
+  Warning if prerequisites are not mastered. Example: "Consider teaching docker/containers first — these prerequisites are not yet mastered."
+</ResponseField>
+
+### Example 1: Start Tutor After Low Probe Score
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "docker/compose",
+  "triggerScore": 0
+}
+```
+
+```json Response
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "phase": "phase1",
+  "guidance": "Assess what the user already knows about docker/compose. Ask an open-ended question about their understanding."
+}
+```
+</CodeGroup>
+
+### Example 2: Start Tutor with Prerequisite Warning
+
+<CodeGroup>
+```json Request
+{
+  "conceptId": "kubernetes/deployments",
+  "triggerScore": 1
+}
+```
+
+```json Response
+{
+  "sessionId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "phase": "phase1",
+  "guidance": "Assess what the user already knows about kubernetes/deployments. Ask an open-ended question about their understanding.",
+  "prerequisiteSuggestion": "Consider teaching docker/containers, kubernetes/pods first — these prerequisites are not yet mastered."
+}
+```
+</CodeGroup>
+
+### Side Effects
+
+1. **Session Creation**: Creates `TutorSession` in state manager
+2. **Pending Action**: Writes `tutor_active` pending action with `sessionId` and `phase`
+3. **ZPD Check**: Identifies unmastered prerequisites
+
+---
+
+## entendi_advance_tutor
+
+Advance a tutor session to the next phase after the user responds.
+
+### Request Parameters
+
+<ParamField path="sessionId" type="string" required>
+  Session identifier from `entendi_start_tutor`
+</ParamField>
+
+<ParamField path="userResponse" type="string" required>
+  User's verbatim response to the current phase's question
+</ParamField>
+
+<ParamField path="score" type="integer">
+  Rubric score (0-3) for **scored phases only** (phase1, phase4). Omit for phase2 and phase3.
+</ParamField>
+
+<ParamField path="confidence" type="number">
+  Evaluator confidence (0.0-1.0) for scored phases. Required if `score` is provided.
+</ParamField>
+
+<ParamField path="reasoning" type="string">
+  Explanation for the score (audit trail). Required if `score` is provided.
+</ParamField>
+
+<ParamField path="misconception" type="string">
+  Detected misconception (stored and addressed in phase3)
+</ParamField>
+
+### Response Fields
+
+<ResponseField name="phase" type="string" required>
+  Next phase: `"phase2"`, `"phase3"`, `"phase4"`, or `"complete"`
+</ResponseField>
+
+<ResponseField name="isComplete" type="boolean" required>
+  `true` if session finished, `false` otherwise
+</ResponseField>
+
+<ResponseField name="guidance" type="string">
+  Phase-specific guidance for the next phase (omitted if `isComplete` is true)
+</ResponseField>
+
+<ResponseField name="masteryUpdate" type="object">
+  Mastery change after scored phase (phase1 or phase4)
+  
+  <Expandable title="Mastery Update Schema">
+    <ResponseField name="before" type="number">
+      P(mastery) before this phase (0.0-1.0)
+    </ResponseField>
+    
+    <ResponseField name="after" type="number">
+      P(mastery) after this phase (0.0-1.0)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="sessionSummary" type="string">
+  Summary when session completes (shows phase1 score, phase4 score, mastery change)
+</ResponseField>
+
+### Example 1: Advance from Phase 1 (Scored)
+
+<CodeGroup>
+```json Request
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "userResponse": "Docker Compose runs multiple containers together, I think?",
+  "score": 1,
+  "confidence": 0.75,
+  "reasoning": "Knows it orchestrates containers but can't explain services or volumes"
+}
+```
+
+```json Response
+{
+  "phase": "phase2",
+  "isComplete": false,
+  "guidance": "Guide them toward deeper understanding of docker/compose. Identify gaps from their phase1 answer.",
+  "masteryUpdate": {
+    "before": 0.500,
+    "after": 0.287
+  }
+}
+```
+</CodeGroup>
+
+### Example 2: Advance from Phase 2 (Not Scored)
+
+<CodeGroup>
+```json Request
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "userResponse": "Oh, services define different containers that work together. And volumes are for data persistence?",
+  "misconception": "Thinks volumes are only for persistence, not shared data between containers"
+}
+```
+
+```json Response
+{
+  "phase": "phase3",
+  "isComplete": false,
+  "guidance": "Address the misconception: 'Thinks volumes are only for persistence, not shared data between containers'. Help the user correct their understanding of docker/compose."
+}
+```
+</CodeGroup>
+
+### Example 3: Advance from Phase 3 to Phase 4
+
+<CodeGroup>
+```json Request
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "userResponse": "Got it! Volumes can share data between services AND persist data when containers restart."
+}
+```
+
+```json Response
+{
+  "phase": "phase4",
+  "isComplete": false,
+  "guidance": "Ask for a comprehensive explanation of docker/compose. This is the final assessment."
+}
+```
+</CodeGroup>
+
+### Example 4: Complete Session (Phase 4 → Complete)
+
+<CodeGroup>
+```json Request
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "userResponse": "Docker Compose defines services in YAML with images, ports, volumes, networks. depends_on controls startup order. Volumes persist data and enable sharing between services. Networks isolate communication.",
+  "score": 3,
+  "confidence": 0.95,
+  "reasoning": "Comprehensive explanation including services, networks, volumes, and depends_on"
+}
+```
+
+```json Response
+{
+  "phase": "complete",
+  "isComplete": true,
+  "sessionSummary": "Tutor session for docker/compose complete. Phase 1 score: 1/3, Phase 4 score: 3/3. Mastery changed from 28.7% to 89.1%.",
+  "masteryUpdate": {
+    "before": 0.287,
+    "after": 0.891
+  }
+}
+```
+</CodeGroup>
+
+### Side Effects
+
+1. **Session Update**: Records user response in `exchanges` array
+2. **Mastery Update**: Applies Bayesian update for scored phases (phase1, phase4)
+3. **Counterfactual Tracking**: Updates `muUntutored`/`sigmaUntutored` to isolate tutoring effect
+4. **Pending Action**: Updates `tutor_active` pending action with new phase (or clears if complete)
+5. **Session Completion**: Clears tutor session from state manager when phase = `complete`
+6. **Cache Invalidation**: Invalidates status/ZPD caches after mastery updates
+
+---
+
+## Integration Pattern
+
+### Full Tutor Flow
+
+```typescript
+// 1. Start tutor (after low probe score)
+const startResult = await mcpClient.callTool('entendi_start_tutor', {
+  conceptId: 'docker/compose',
+  triggerScore: 0,
+});
+
+const sessionId = startResult.sessionId;
+let currentPhase = startResult.phase;
+
+// 2. Phase 1: Ask initial question
+await askUser(startResult.guidance); // "Assess what the user already knows..."
+const phase1Response = await getUserResponse();
+
+const phase1Eval = await llm.evaluateResponse(phase1Response);
+const phase2Result = await mcpClient.callTool('entendi_advance_tutor', {
+  sessionId,
+  userResponse: phase1Response,
+  score: phase1Eval.score,
+  confidence: phase1Eval.confidence,
+  reasoning: phase1Eval.reasoning,
+});
+
+currentPhase = phase2Result.phase; // "phase2"
+
+// 3. Phase 2: Guide (not scored)
+await askUser(phase2Result.guidance);
+const phase2Response = await getUserResponse();
+
+const phase3Result = await mcpClient.callTool('entendi_advance_tutor', {
+  sessionId,
+  userResponse: phase2Response,
+  misconception: detectMisconception(phase2Response),
+});
+
+currentPhase = phase3Result.phase; // "phase3"
+
+// 4. Phase 3: Address misconceptions (not scored)
+await askUser(phase3Result.guidance);
+const phase3Response = await getUserResponse();
+
+const phase4Result = await mcpClient.callTool('entendi_advance_tutor', {
+  sessionId,
+  userResponse: phase3Response,
+});
+
+currentPhase = phase4Result.phase; // "phase4"
+
+// 5. Phase 4: Final assessment (scored)
+await askUser(phase4Result.guidance); // "Ask for a comprehensive explanation..."
+const phase4Response = await getUserResponse();
+
+const phase4Eval = await llm.evaluateResponse(phase4Response);
+const completeResult = await mcpClient.callTool('entendi_advance_tutor', {
+  sessionId,
+  userResponse: phase4Response,
+  score: phase4Eval.score,
+  confidence: phase4Eval.confidence,
+  reasoning: phase4Eval.reasoning,
+});
+
+if (completeResult.isComplete) {
+  console.log(completeResult.sessionSummary);
+  // "Tutor session for docker/compose complete. Phase 1 score: 1/3, Phase 4 score: 3/3..."
+}
+```
+
+---
+
+## Phase Guidance Templates
+
+Generated guidance per phase:
+
+| Phase | Template |
+|-------|----------|
+| **phase1** | "Assess what the user already knows about {concept}. Ask an open-ended question about their understanding." |
+| **phase2** | "Guide them toward deeper understanding of {concept}. Identify gaps from their phase1 answer." |
+| **phase3** | "Address the misconception: '{misconception}'. Help the user correct their understanding of {concept}." (or generic if no misconception) |
+| **phase4** | "Ask for a comprehensive explanation of {concept}. This is the final assessment." |
+
+---
+
+## Prerequisite Warnings
+
+If a concept has unmastered prerequisites, `entendi_start_tutor` returns a warning:
+
+```json
+{
+  "prerequisiteSuggestion": "Consider teaching docker/containers, kubernetes/pods first — these prerequisites are not yet mastered."
+}
+```
+
+This follows the **Zone of Proximal Development (ZPD)** principle: teach prerequisites before advanced concepts.
+
+---
+
+## Counterfactual Tracking
+
+Tutor sessions maintain **untutored mastery estimates** to measure tutoring effectiveness:
+
+- **Phase 1**: Captures pre-tutoring mastery as `muUntutored`, `sigmaUntutored`
+- **Phases 2-4**: Mastery updates apply only to `mu`, `sigma` (not untutored estimates)
+- **Analysis**: Compare `muUntutored` vs. `mu` to quantify tutoring impact
+
+See `UserConceptState` schema:
+
+```typescript
+interface UserConceptState {
+  mastery: { mu: number, sigma: number };      // Actual mastery (includes tutoring)
+  muUntutored: number;                          // Counterfactual (no tutoring)
+  sigmaUntutored: number;
+  tutoredAssessmentCount: number;
+  untutoredAssessmentCount: number;
+}
+```
+
+---
+
+## Related Tools
+
+<CardGroup cols={2}>
+  <Card title="entendi_record_evaluation" icon="clipboard-check" href="/api/mcp/record-evaluation">
+    Record probe evaluation (triggers tutor if score ≤ threshold)
+  </Card>
+  <Card title="entendi_dismiss" icon="times-circle" href="/api/mcp/status">
+    Dismiss pending tutor session
+  </Card>
+  <Card title="entendi_get_status" icon="chart-line" href="/api/mcp/status">
+    View mastery state including tutored vs. untutored
+  </Card>
+</CardGroup>
+
+---
+
+## Source Code Reference
+
+- `entendi_start_tutor` definition: `src/mcp/server.ts:200-222`
+- `entendi_advance_tutor` definition: `src/mcp/server.ts:225-255`
+- Implementation: `src/mcp/tools/tutor.ts:70-262`
+- Phase logic: `src/core/tutor-session.ts`
+- Counterfactual tracking: `src/mcp/tools/shared-update.ts`

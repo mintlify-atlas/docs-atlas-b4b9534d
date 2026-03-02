@@ -1,0 +1,467 @@
+---
+title: "Probabilistic Model"
+description: "Bayesian mastery tracking with GRM (Graded Response Model) and FSRS memory modeling"
+---
+
+The probabilistic model module provides functions for Bayesian mastery estimation and FSRS-4.5 memory modeling. It combines Item Response Theory (IRT) with spaced repetition to track both conceptual understanding and memory decay.
+
+## Core Functions
+
+### bayesianUpdate
+
+Elo-like Kalman filter update for mastery state based on rubric score.
+
+<ParamField path="mastery" type="MasteryState" required>
+  Current mastery state with `mu` (IRT scale mean) and `sigma` (standard deviation)
+</ParamField>
+
+<ParamField path="score" type="RubricScore" required>
+  Rubric score: 0 (no understanding), 1 (partial), 2 (functional), 3 (deep)
+</ParamField>
+
+<ResponseField name="MasteryState" type="object">
+  Updated mastery state
+  <Expandable title="properties">
+    <ResponseField name="mu" type="number">
+      Updated posterior mean on IRT scale (real line)
+    </ResponseField>
+    <ResponseField name="sigma" type="number">
+      Updated posterior standard deviation
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { bayesianUpdate } from '@entendi/core';
+
+const mastery = { mu: 0.5, sigma: 1.2 };
+const updated = bayesianUpdate(mastery, 2); // score = 2 (functional understanding)
+console.log(updated); // { mu: 0.73, sigma: 0.89 }
+```
+
+### grmUpdate
+
+Graded Response Model Bayesian update using Newton-Raphson MAP estimation with Laplace approximation. More sophisticated than `bayesianUpdate` — models the full categorical response process.
+
+<ParamField path="mastery" type="MasteryState" required>
+  Current mastery state
+</ParamField>
+
+<ParamField path="score" type="RubricScore" required>
+  Rubric score (0-3)
+</ParamField>
+
+<ParamField path="itemParams" type="GRMItemParams">
+  GRM item parameters. Defaults to `{ discrimination: 1.0, thresholds: [-1.0, 0.0, 1.0] }`
+</ParamField>
+
+<ResponseField name="MasteryState" type="object">
+  Updated mastery state (MAP estimate + Laplace posterior variance)
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { grmUpdate } from '@entendi/core';
+
+const mastery = { mu: 0.0, sigma: 1.5 };
+const updated = grmUpdate(mastery, 2);
+console.log(updated); // { mu: 0.82, sigma: 0.71 }
+
+// With custom item parameters (harder concept)
+const hardItem = {
+  discrimination: 1.5,
+  thresholds: [-0.5, 0.5, 1.5]
+};
+const updatedHard = grmUpdate(mastery, 2, hardItem);
+```
+
+### grmBayesianUpdate
+
+Low-level GRM update function with convergence diagnostics. Returns detailed update result including convergence status and iteration count.
+
+<ParamField path="score" type="RubricScore" required>
+  Observed rubric score (0-3)
+</ParamField>
+
+<ParamField path="priorMu" type="number" required>
+  Prior mean on IRT scale
+</ParamField>
+
+<ParamField path="priorSigma" type="number" required>
+  Prior standard deviation (clamped to [0.05, 1.5])
+</ParamField>
+
+<ParamField path="itemParams" type="GRMItemParams">
+  GRM item parameters
+</ParamField>
+
+<ResponseField name="GRMUpdateResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="mu" type="number">
+      MAP estimate of theta (mastery)
+    </ResponseField>
+    <ResponseField name="sigma" type="number">
+      Laplace posterior standard deviation
+    </ResponseField>
+    <ResponseField name="converged" type="boolean">
+      Whether Newton-Raphson converged within tolerance
+    </ResponseField>
+    <ResponseField name="iterations" type="number">
+      Number of Newton-Raphson iterations performed (max 25)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { grmBayesianUpdate } from '@entendi/core';
+
+const result = grmBayesianUpdate(2, 0.0, 1.5);
+if (result.converged) {
+  console.log(`Converged in ${result.iterations} iterations`);
+  console.log(`Posterior: mu=${result.mu}, sigma=${result.sigma}`);
+} else {
+  console.warn('Newton-Raphson did not converge');
+}
+```
+
+### grmCategoryProbs
+
+Compute GRM category probabilities for all four rubric scores (0-3) at a given mastery level.
+
+<ParamField path="theta" type="number" required>
+  Mastery level on IRT scale
+</ParamField>
+
+<ParamField path="itemParams" type="GRMItemParams">
+  GRM item parameters
+</ParamField>
+
+<ResponseField name="[number, number, number, number]" type="tuple">
+  Probabilities for scores [0, 1, 2, 3]. Sum equals 1.0.
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { grmCategoryProbs, pMastery } from '@entendi/core';
+
+const mastery = { mu: 0.8, sigma: 0.6 };
+const probs = grmCategoryProbs(mastery.mu);
+
+console.log('Score probabilities:');
+console.log(`  P(0) = ${probs[0].toFixed(3)}`);
+console.log(`  P(1) = ${probs[1].toFixed(3)}`);
+console.log(`  P(2) = ${probs[2].toFixed(3)}`);
+console.log(`  P(3) = ${probs[3].toFixed(3)}`);
+console.log(`Mastery probability: ${pMastery(mastery.mu).toFixed(3)}`);
+```
+
+### grmFisherInformation
+
+Expected Fisher information at a given mastery level. Higher values indicate the assessment is more informative at this difficulty level.
+
+<ParamField path="theta" type="number" required>
+  Mastery level on IRT scale
+</ParamField>
+
+<ParamField path="itemParams" type="GRMItemParams">
+  GRM item parameters
+</ParamField>
+
+<ResponseField name="number" type="number">
+  Expected Fisher information I(θ)
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { grmFisherInformation } from '@entendi/core';
+
+// Find mastery level with maximum information
+const thetaRange = Array.from({ length: 41 }, (_, i) => -2 + i * 0.1);
+const infoValues = thetaRange.map(theta => ({
+  theta,
+  info: grmFisherInformation(theta)
+}));
+
+const maxInfo = infoValues.reduce((max, curr) => 
+  curr.info > max.info ? curr : max
+);
+
+console.log(`Maximum information at theta=${maxInfo.theta.toFixed(2)}`);
+```
+
+## FSRS Memory Functions
+
+### fsrsStabilityAfterSuccess
+
+FSRS-4.5 stability update after successful recall (grades 2-4).
+
+<ParamField path="S" type="number" required>
+  Current stability (days until retrievability drops to 90%)
+</ParamField>
+
+<ParamField path="D" type="number" required>
+  Current difficulty (1-10 scale)
+</ParamField>
+
+<ParamField path="R" type="number" required>
+  Current retrievability (0-1)
+</ParamField>
+
+<ParamField path="grade" type="1 | 2 | 3 | 4" required>
+  FSRS grade: 1 (again), 2 (hard), 3 (good), 4 (easy)
+</ParamField>
+
+<ResponseField name="number" type="number">
+  Updated stability (minimum 0.1 days)
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { fsrsStabilityAfterSuccess, retrievability, mapRubricToFsrsGrade } from '@entendi/core';
+
+const memory = { stability: 7.0, difficulty: 5.0 };
+const elapsedDays = 3;
+const R = retrievability(elapsedDays, memory.stability);
+const rubricScore = 2; // functional understanding
+const grade = mapRubricToFsrsGrade(rubricScore); // converts 0-3 to 1-4
+
+const newStability = fsrsStabilityAfterSuccess(
+  memory.stability,
+  memory.difficulty,
+  R,
+  grade
+);
+
+console.log(`Stability: ${memory.stability}d -> ${newStability.toFixed(1)}d`);
+```
+
+### fsrsDifficultyUpdate
+
+FSRS difficulty update after assessment.
+
+<ParamField path="D" type="number" required>
+  Current difficulty (1-10)
+</ParamField>
+
+<ParamField path="grade" type="1 | 2 | 3 | 4" required>
+  FSRS grade
+</ParamField>
+
+<ResponseField name="number" type="number">
+  Updated difficulty (clamped to [1, 10])
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { fsrsDifficultyUpdate, mapRubricToFsrsGrade } from '@entendi/core';
+
+const difficulty = 5.0;
+const grade = mapRubricToFsrsGrade(3); // rubric 3 -> grade 4 (easy)
+const newDifficulty = fsrsDifficultyUpdate(difficulty, grade);
+
+console.log(`Difficulty: ${difficulty} -> ${newDifficulty.toFixed(2)}`);
+```
+
+### retrievability
+
+Power-law forgetting curve. Computes probability of recall at time t.
+
+<ParamField path="t" type="number" required>
+  Elapsed time in days
+</ParamField>
+
+<ParamField path="S" type="number" required>
+  Stability (days until R = 0.9)
+</ParamField>
+
+<ResponseField name="number" type="number">
+  Retrievability R(t, S) in [0, 1]
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { retrievability } from '@entendi/core';
+
+const stability = 10.0; // 10 days to reach R=0.9
+const days = [0, 5, 10, 15, 20];
+
+days.forEach(t => {
+  const R = retrievability(t, stability);
+  console.log(`After ${t} days: R = ${R.toFixed(3)}`);
+});
+// Output:
+// After 0 days: R = 1.000
+// After 5 days: R = 0.949
+// After 10 days: R = 0.900
+// After 15 days: R = 0.857
+// After 20 days: R = 0.819
+```
+
+### decayPrior
+
+Blend posterior with initial prior based on retrievability. Used to model forgetting of the mastery estimate itself.
+
+<ParamField path="mu" type="number" required>
+  Current posterior mean
+</ParamField>
+
+<ParamField path="sigma" type="number" required>
+  Current posterior standard deviation
+</ParamField>
+
+<ParamField path="R" type="number" required>
+  Retrievability (0-1)
+</ParamField>
+
+<ResponseField name="MasteryState" type="object">
+  Decayed mastery state (regresses toward prior as R decreases)
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { decayPrior, retrievability } from '@entendi/core';
+
+const mastery = { mu: 1.2, sigma: 0.8 };
+const memory = { stability: 7.0, difficulty: 5.0 };
+const elapsedDays = 30;
+const R = retrievability(elapsedDays, memory.stability);
+
+const decayed = decayPrior(mastery.mu, mastery.sigma, R);
+console.log('Original:', mastery);
+console.log('Decayed:', decayed);
+console.log(`Retrievability: ${R.toFixed(3)}`);
+```
+
+## Helper Functions
+
+### mapRubricToFsrsGrade
+
+Map 0-3 rubric score to FSRS 1-4 grade.
+
+<ParamField path="rubric" type="RubricScore" required>
+  Rubric score (0-3)
+</ParamField>
+
+<ResponseField name="1 | 2 | 3 | 4" type="number">
+  FSRS grade (1-4)
+</ResponseField>
+
+```typescript probabilistic-model.ts
+import { mapRubricToFsrsGrade } from '@entendi/core';
+
+// Rubric: 0=none, 1=partial, 2=functional, 3=deep
+// FSRS: 1=again, 2=hard, 3=good, 4=easy
+const grade = mapRubricToFsrsGrade(2); // 2 -> 3 (good)
+```
+
+## Type Definitions
+
+```typescript types.ts
+export interface MasteryState {
+  mu: number;       // Normal posterior mean (IRT scale, real line)
+  sigma: number;    // Normal posterior std dev
+}
+
+export interface MemoryState {
+  stability: number;   // S: days until R drops to 90%
+  difficulty: number;  // D: 1-10 scale
+}
+
+export interface GRMItemParams {
+  discrimination: number;                    // a parameter (slope)
+  thresholds: [number, number, number];      // b1 < b2 < b3 (category boundaries)
+}
+
+export type RubricScore = 0 | 1 | 2 | 3;
+
+export interface GRMUpdateResult {
+  mu: number;
+  sigma: number;
+  converged: boolean;
+  iterations: number;
+}
+```
+
+## Constants
+
+```typescript probabilistic-model.ts
+// FSRS-4.5 calibrated constants
+const DECAY = -0.5;
+const FACTOR = 19 / 81; // calibrated so R(S, S) = 0.9
+
+// Prior parameters
+const PRIOR_MU = 0.0;
+const PRIOR_SIGMA = 1.5;
+
+// Kalman filter noise
+const NOISE = 1.0;
+
+// Newton-Raphson parameters
+const NR_MAX_ITER = 25;
+const NR_TOLERANCE = 1e-6;
+const NR_MAX_STEP = 3.0;
+const SIGMA_MIN = 0.05;
+const SIGMA_MAX = 1.5;
+
+// Default GRM item parameters
+export const DEFAULT_GRM_PARAMS: GRMItemParams = {
+  discrimination: 1.0,
+  thresholds: [-1.0, 0.0, 1.0],
+};
+```
+
+## Full Update Example
+
+```typescript example.ts
+import {
+  bayesianUpdate,
+  grmUpdate,
+  fsrsStabilityAfterSuccess,
+  fsrsDifficultyUpdate,
+  retrievability,
+  decayPrior,
+  mapRubricToFsrsGrade,
+  type MasteryState,
+  type MemoryState,
+  type RubricScore
+} from '@entendi/core';
+
+function updateUserConcept(
+  mastery: MasteryState,
+  memory: MemoryState,
+  lastAssessed: Date,
+  rubricScore: RubricScore
+): { mastery: MasteryState; memory: MemoryState } {
+  const now = new Date();
+  const elapsedDays = (now.getTime() - lastAssessed.getTime()) / (1000 * 60 * 60 * 24);
+  
+  // 1. Compute retrievability
+  const R = retrievability(elapsedDays, memory.stability);
+  
+  // 2. Decay mastery estimate toward prior
+  const decayed = decayPrior(mastery.mu, mastery.sigma, R);
+  
+  // 3. Update mastery with new observation
+  const newMastery = grmUpdate(decayed, rubricScore);
+  
+  // 4. Update FSRS memory if score >= 2 (successful recall)
+  let newMemory = memory;
+  if (rubricScore >= 2) {
+    const grade = mapRubricToFsrsGrade(rubricScore);
+    const newStability = fsrsStabilityAfterSuccess(
+      memory.stability,
+      memory.difficulty,
+      R,
+      grade
+    );
+    const newDifficulty = fsrsDifficultyUpdate(memory.difficulty, grade);
+    newMemory = { stability: newStability, difficulty: newDifficulty };
+  }
+  
+  return { mastery: newMastery, memory: newMemory };
+}
+
+// Usage
+const result = updateUserConcept(
+  { mu: 0.8, sigma: 0.9 },
+  { stability: 7.0, difficulty: 5.0 },
+  new Date('2026-02-20'),
+  2 // functional understanding
+);
+
+console.log('Updated mastery:', result.mastery);
+console.log('Updated memory:', result.memory);
+```

@@ -1,0 +1,305 @@
+---
+title: System Architecture
+description: Deep dive into Entendi's architecture, data flow, and component interactions
+---
+
+## Overview
+
+Entendi is a comprehension accountability layer that runs as a Claude Code plugin. The system uses a hybrid architecture combining local state management with cloud-based persistence and analytics.
+
+## Architecture Diagram
+
+```
+Claude Code ──► MCP Server (stdio) ──► HTTP API (Hono) ──► Neon PostgreSQL
+                                         ▲
+Dashboard (browser) ─────────────────────┘
+```
+
+### Data Flow
+
+1. **Claude Code** communicates with the MCP server via stdio
+2. **MCP Server** (`dist/mcp/server.js`) provides tools to Claude and forwards requests to the HTTP API
+3. **HTTP API** (Hono on Cloudflare Workers) handles business logic and database operations
+4. **PostgreSQL** (Neon serverless) stores persistent state: concepts, user mastery, assessments, tutor sessions
+5. **Dashboard** (vanilla JS + ECharts) renders knowledge graphs and analytics
+
+## Component Breakdown
+
+### Plugin Layer
+
+The plugin is distributed as a `.claude-plugin` directory with the following structure:
+
+```
+.claude-plugin/
+├── plugin.json          # Plugin metadata
+├── mcp.json             # MCP server configuration
+├── hooks/               # Hook entrypoints (bash wrappers)
+│   ├── session-start    # Injects concept-detection skill
+│   ├── user-prompt-submit.js  # Handles login, pending probes
+│   ├── notification.js  # Handles teach-me patterns
+│   └── ...
+└── mcp/
+    └── server.js        # Bundled MCP server
+```
+
+**Version Stamping**: Each build stamps the plugin version with the git hash to bust Claude Code's plugin cache:
+
+```typescript
+// From esbuild.config.ts:83-95
+const gitHash = execFileSync('git', ['rev-parse', '--short', 'HEAD']).trim();
+const pluginMeta = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
+pluginMeta.version = `${pluginMeta.version}+${gitHash}`;
+```
+
+### Hook Execution Flow
+
+**SessionStart Hook**: Injects the concept-detection skill into every Claude Code session, enabling LLM-level concept detection from conversation context.
+
+**UserPromptSubmit Hook**: Intercepts user prompts to:
+- Detect `entendi login` commands and initiate device code flow
+- Check for pending probes and inject them into the prompt
+- Handle teach-me patterns ("teach me X", "I don't understand Y")
+
+**Notification Hook**: Processes notifications from the API (e.g., probe triggers, tutor offers).
+
+### MCP Server
+
+The MCP server (`src/mcp/server.ts`) exposes 8 tools to Claude:
+
+| Tool | Purpose |
+|------|--------|
+| `entendi_observe` | Record concept observations from code context |
+| `entendi_record_evaluation` | Submit probe response evaluation |
+| `entendi_start_tutor` | Initialize a Socratic tutor session |
+| `entendi_advance_tutor` | Progress through tutor phases |
+| `entendi_dismiss` | Dismiss a probe/tutor with reason |
+| `entendi_get_status` | Get current session state |
+| `entendi_get_zpd_frontier` | Get Zone of Proximal Development concepts |
+| `entendi_login` | Initiate device code authentication |
+
+**Communication**: The MCP server forwards all tool calls to the HTTP API using the user's API key from `~/.entendi/config.json`.
+
+### HTTP API
+
+Built with **Hono** (lightweight web framework) and deployed to **Cloudflare Workers**.
+
+**Entry Point**: `src/api/worker.ts`
+- Caches the Hono app per isolate to avoid recreating on every request
+- Propagates environment variables from Workers bindings to `process.env`
+- Handles both HTTP requests and scheduled cron jobs
+
+**Routes** (`src/api/routes/`):
+- `mcp.ts` — MCP tool endpoints (`/api/mcp/*`)
+- `mastery.ts` — Mastery data and ZPD frontier (`/api/mastery/*`)
+- `events.ts` — Assessment event history (`/api/events`)
+- `dashboard.ts` — Dashboard HTML and assets (`/`, `/dashboard`)
+- `public.ts` — Public landing pages
+- `billing.ts` — Stripe integration
+- `org.ts` — Organization management
+
+**Database**: Drizzle ORM with Neon PostgreSQL serverless. Tables:
+- `concepts` — Concept nodes with GRM item parameters
+- `user_concept_states` — Per-user mastery/memory state
+- `assessment_events` — Historical probe/tutor evaluations
+- `tutor_sessions` — Active and completed tutor sessions
+- `users` — Better Auth user accounts
+- `api_keys` — Device-code linked API keys
+
+### State Management
+
+**Hybrid Persistence**:
+
+1. **Local State** (`~/.entendi/` on user machine):
+   - `config.json` — API key
+   - `knowledge-graph.json` — Local concept graph cache
+   - `probe-session.json` — Pending probe state
+   - `tutor-session.json` — Active tutor session
+   - `debug.log` — Hook/MCP execution logs
+
+2. **Cloud State** (PostgreSQL):
+   - Canonical source of truth for mastery, concepts, assessments
+   - Synced on every observation/evaluation
+
+**Atomic Writes**: Local state uses write-to-temp + rename to prevent corruption:
+
+```typescript
+// From src/core/state-manager.ts:11-15
+export function atomicWriteFileSync(filePath: string, data: string): void {
+  const tmpPath = filePath + '.tmp';
+  writeFileSync(tmpPath, data, 'utf-8');
+  renameSync(tmpPath, filePath);
+}
+```
+
+### Concept Detection
+
+Entendi uses **LLM-level concept detection** via a skill injected at session start.
+
+**Skill Location**: `plugin/skills/concept-detection/SKILL.md`
+
+This skill instructs Claude to:
+1. Identify technical concepts from user prompts and code context
+2. Use the `entendi_observe` tool to record observations
+3. Extract concepts from package.json, AST, and conversation
+
+**No PostToolUse Hook**: The skill handles all detection with full conversation context, eliminating the need for a separate hook.
+
+### Build Pipeline
+
+`esbuild.config.ts` orchestrates four parallel builds:
+
+1. **Hook JS Bundles** → `dist/hooks/`
+   - Bundles TypeScript hooks to standalone JS files
+   - Adds shebang: `#!/usr/bin/env node`
+   - External: `@anthropic-ai/sdk`
+
+2. **MCP Server Bundle** → `dist/mcp/`
+   - Single-file bundle for MCP server
+   - Platform: Node 22, format: ESM
+
+3. **Plugin Assembly** → `dist/plugin/`
+   - Clean build (deletes previous output)
+   - Copies `plugin/` static files
+   - Injects built JS bundles
+   - Stamps version with git hash
+
+4. **Dashboard Assets** → `public/assets/`
+   - Content-hashed filenames: `[name]-[hash].js`
+   - Generates `manifest.json` for Workers
+   - Separate bundle for ECharts (tree-shaken)
+
+**Build Command**: `npm run build` → `tsc && node --import tsx esbuild.config.ts`
+
+## Deployment Architecture
+
+### Cloudflare Workers
+
+**Config**: `wrangler.toml`
+
+```toml
+name = "entendi-api"
+main = "src/api/worker.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+```
+
+**Custom Domains**:
+- `entendi.dev` — Dashboard and landing page
+- `api.entendi.dev` — API endpoints
+
+**Assets Serving**: Cloudflare Workers Assets (static files from `public/`)
+- `run_worker_first` routes: `/api/*`, `/health`, `/`, `/link`, `/login`
+- Other routes serve static assets directly
+
+**AI Binding**: Cloudflare Workers AI for future LLM-based features
+
+**Cron Triggers**: Weekly job (Monday 8am UTC) for:
+1. Mastery summary emails (via Resend)
+2. Database backups to R2
+
+### Staging Environment
+
+```toml
+[env.staging]
+name = "entendi-api-staging"
+```
+
+Secrets managed via `npx wrangler secret put <KEY> --env staging`
+
+## Development Workflow
+
+### Local Development
+
+```bash
+npm run api:dev   # Start Hono server on localhost:3456
+```
+
+Environment variables from `.env`:
+- `DATABASE_URL` — Neon PostgreSQL connection string
+- `BETTER_AUTH_SECRET` — Auth secret (generate with `openssl rand -base64 32`)
+- `BETTER_AUTH_URL` — `http://localhost:3456` for local dev
+
+### Plugin Development Loop
+
+1. Make code changes
+2. `npm run plugin:reinstall` — builds, clears cache, reinstalls
+3. Restart Claude Code
+4. Check `~/.entendi/debug.log` for hook execution
+
+### Testing in Devcontainer
+
+The `.devcontainer/` setup provides isolated testing:
+- Fresh Node 22 + Claude Code CLI installation
+- Automated plugin installation
+- `test-plugin.sh` validates hook structure and MCP server
+
+## Security Model
+
+**API Key Authentication**:
+- Device code flow (similar to GitHub CLI)
+- API keys stored in `~/.entendi/config.json`
+- Keys linked to user accounts in `api_keys` table
+
+**Better Auth Integration**:
+- Email/password, OAuth (GitHub, Google)
+- Session management with secure cookies
+- CSRF protection
+
+**Database Security**:
+- Neon serverless PostgreSQL with TLS
+- Connection pooling and statement caching
+- Row-level security (future enhancement)
+
+## Performance Optimizations
+
+**Workers Isolate Caching**: The Hono app is cached per isolate to avoid recreating on every request:
+
+```typescript
+// From src/api/worker.ts:26-78
+let cachedApp: ReturnType<typeof createApp> | null = null;
+
+export default {
+  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+    if (!cachedApp) {
+      propagateEnv(env);
+      cachedApp = createApp(env.DATABASE_URL, {...});
+    }
+    return cachedApp.app.fetch(request);
+  },
+};
+```
+
+**Asset Content Hashing**: Dashboard assets use content-based hashing for cache busting and long-term caching.
+
+**Drizzle ORM**: Prepared statements and connection pooling with Neon's serverless driver.
+
+## Observability
+
+**Debug Logging**: All hooks, MCP tools, and API calls log to `~/.entendi/debug.log`
+
+**Cloudflare Observability**: Enabled in `wrangler.toml` for request metrics, error tracking, and performance monitoring
+
+**Backup System**: Weekly automated backups to R2 (JSONL format):
+
+```typescript
+// From src/api/worker.ts:40-67
+const BACKUP_TABLES = ['concepts', 'user_concept_states', 'assessment_events', 'tutor_sessions'];
+
+async function runBackup(db, bucket): Promise<{tables: number; totalRows: number}> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  for (const table of BACKUP_TABLES) {
+    const rows = await db.execute(sql.raw(`SELECT row_to_json(t) FROM ${table} t`));
+    await bucket.put(`backups/${timestamp}/${table}.jsonl`, ...);
+  }
+}
+```
+
+## Future Architecture Considerations
+
+**Real-time Sync**: WebSocket support for live dashboard updates during active coding sessions
+
+**Multi-tenant Isolation**: Organization-level data partitioning with row-level security
+
+**Distributed Tracing**: OpenTelemetry integration for end-to-end request tracing
+
+**Cache Layer**: Redis/KV for frequently accessed mastery states and concept graphs

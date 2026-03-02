@@ -1,0 +1,175 @@
+---
+title: Knowledge Graph
+description: Understand the concept graph, prerequisites, and how mastery relationships work
+---
+
+Entendi builds a **knowledge graph** of technical concepts as you work with AI tools. Each concept tracks your mastery level, assessment history, and relationships to other concepts.
+
+## What is a Concept?
+
+A concept is a discrete unit of technical knowledge extracted from your AI-assisted work, such as:
+
+- `http/cors` — Cross-Origin Resource Sharing
+- `kubernetes/pod-lifecycle` — Pod creation and termination
+- `react/hooks/useEffect` — React effect hook
+- `security/jwt-validation` — JSON Web Token verification
+
+Concepts are automatically detected by the **concept-detection skill** running in Claude Code. They're normalized into a hierarchical namespace using `/` separators.
+
+### Concept Properties
+
+- **ID**: Unique identifier (e.g., `aws/iam/policies`)
+- **Domain**: High-level category (security, cloud, frontend, etc.)
+- **Specificity**: How narrow vs. broad the concept is (0.0-1.0)
+- **Description**: Human-readable explanation
+
+## Concept Graph Visualization
+
+The **Concepts tab** displays all concepts you've been assessed on. For each concept, you see:
+
+### Mastery Range
+
+Displayed as a **confidence interval** (e.g., "65–82%"):
+
+- **Value**: Point estimate from Bayesian mastery model (`pMastery(mu)`)
+- **Low**: Lower bound of 95% confidence interval (`pMastery(mu - 2*sigma)`)
+- **High**: Upper bound of 95% confidence interval (`pMastery(mu + 2*sigma)`)
+
+The range narrows as you complete more assessments and the model becomes more certain.
+
+### Confidence Level
+
+- **High**: `sigma < 0.4` — Model is very certain about your mastery
+- **Med**: `sigma < 0.8` — Moderate uncertainty
+- **Low**: `sigma >= 0.8` — High uncertainty (few assessments or inconsistent performance)
+
+### Color Coding
+
+Mastery bars use color to indicate performance:
+
+- **Red** (< 30%): Needs significant review
+- **Amber** (30–60%): Developing understanding
+- **Green** (≥ 60%): Strong mastery
+- **Gray**: Not yet assessed
+
+## Prerequisites and Relationships
+
+Concepts can have **prerequisite** relationships indicating foundational knowledge:
+
+```
+http/cors
+  requires → http/headers
+  requires → security/same-origin-policy
+```
+
+When viewing a concept's detail page, you see:
+
+- **Prerequisites**: Concepts you should master first (with their current mastery levels)
+- **Dependents**: Concepts that build on this one
+
+This structure powers the **Zone of Proximal Development (ZPD)** frontier — concepts where prerequisites are mastered but the concept itself is not.
+
+## Novelty Classification
+
+Entendi classifies concepts into novelty levels to prioritize probes:
+
+### Novel
+- No assessment history, or mastery < 30%
+- **Always probed** when encountered
+- Security domain concepts are always classified as **critical**
+
+### Adjacent
+- Mastery between 30–80%
+- **Medium probe priority**
+
+### Routine
+- Mastery > 80% AND retrievability > 70%
+- **Low probe priority** unless memory decay detected
+
+### Critical
+- Security domain concepts regardless of mastery
+- **Always probed** to ensure security knowledge is verified
+
+Retrievability is computed using a memory model:
+
+```
+R = retrievability(elapsed_days, stability)
+```
+
+Where `stability` increases with repeated correct assessments.
+
+## Concept Detail View
+
+Click any concept to open an expanded view showing:
+
+### Summary Statistics
+
+- **Probes**: Total probe assessments completed
+- **Tutor Sessions**: Interactive tutor sessions completed
+- **Current Streak**: Consecutive days with assessments
+- **Best Streak**: Longest streak achieved
+
+### Mastery Timeline
+
+Interactive chart visualizing:
+
+- **Confidence band** (shaded area): 95% confidence interval
+- **Mastery line**: Point estimate over time
+- **Event markers**: Circles indicate assessments
+
+Click any point on the timeline to view the full assessment details, including:
+
+- Question text
+- Your response
+- Rubric score (0–3)
+- Integrity score
+- Feedback
+
+### Assessment History Table
+
+Chronological log of all events for this concept:
+
+- **Type**: `probe`, `tutor_phase1`, `tutor_phase4`
+- **Score**: Rubric score (0–3)
+- **Mastery**: Before → After percentage with delta (e.g., "+8%")
+- **Integrity**: Behavioral anomaly score
+- **When**: Time ago
+
+### Dismissal Events
+
+If you dismissed a probe for this concept, dismissals appear in the timeline with:
+
+- **Reason**: `busy`, `irrelevant`, `broken`
+- **Note**: Optional user-provided context
+- **Requeued**: Whether the concept was added back to your queue
+
+## Filtering and Search
+
+The Concepts tab includes filters to explore your graph:
+
+- **All**: Show all assessed concepts
+- **By Domain**: Filter by domain (e.g., only `security` or `cloud`)
+
+Concepts are sorted by **last assessed** by default, with recently assessed concepts at the top.
+
+## ZPD Frontier
+
+The **Zone of Proximal Development** frontier identifies concepts you're ready to learn:
+
+1. All prerequisites are mastered (≥ 70%)
+2. The concept itself is not yet mastered (< 70%)
+3. You've been assessed at least once (unless `includeUnassessed` is enabled)
+
+Frontier concepts are sorted by **Fisher information** — the concepts where assessment provides the most value for refining your mastery estimate.
+
+The MCP tool `entendi_get_zpd_frontier` returns this list for AI-driven tutoring.
+
+## Graph Persistence
+
+Your knowledge graph is stored in:
+
+- **PostgreSQL** (Neon): Concepts, mastery states, edges, analytics
+- **User concept states**: `mu`, `sigma`, `assessmentCount`, `lastAssessed`, memory parameters
+- **Concept analytics**: Streaks, totals, performance metrics
+
+The graph is loaded on dashboard initialization and updated in real-time as new assessments complete.

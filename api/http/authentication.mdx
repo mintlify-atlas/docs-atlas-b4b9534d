@@ -1,0 +1,210 @@
+---
+title: Authentication
+description: Authenticate with API keys, sessions, and device code flow
+---
+
+The Entendi API supports three authentication methods: session-based authentication, API keys, and device code flow for CLI tools.
+
+## Authentication Methods
+
+### Session Authentication
+
+Session authentication uses cookies after signing in through the web dashboard or OAuth providers (GitHub, Google).
+
+**Supported Providers:**
+- Email/Password (with email verification if configured)
+- GitHub OAuth
+- Google OAuth
+
+**Session Configuration:**
+- Session duration: 7 days
+- Auto-refresh: Sessions refresh after 1 day of activity
+- Sessions are scoped to a user and optionally an active organization
+
+### API Keys
+
+API keys provide programmatic access without requiring interactive login. Create API keys through the dashboard or device code flow.
+
+**Using API Keys:**
+
+Include your API key in the `x-api-key` header:
+
+```bash
+curl https://api.entendi.dev/api/mastery \
+  -H "x-api-key: your_api_key_here"
+```
+
+Or use Bearer authentication:
+
+```bash
+curl https://api.entendi.dev/api/mastery \
+  -H "Authorization: Bearer your_api_key_here"
+```
+
+**API Key Features:**
+- Persistent authentication without session expiry
+- Optional rate limiting per key
+- Can be named for organization (e.g., `device-ABC123`)
+- Full user permissions
+
+### Device Code Flow
+
+Device code flow enables CLI tools and headless environments to authenticate by displaying a code that users verify in a browser.
+
+#### Step 1: Request a Device Code
+
+```bash POST /api/auth/device-code
+curl -X POST https://api.entendi.dev/api/auth/device-code
+```
+
+**Response:**
+
+```json
+{
+  "code": "A8K3JN7M",
+  "verifyUrl": "https://api.entendi.dev/link?code=A8K3JN7M",
+  "expiresAt": "2026-03-02T10:45:00.000Z"
+}
+```
+
+<ResponseField name="code" type="string" required>
+  8-character device code (uppercase alphanumeric, no ambiguous characters)
+</ResponseField>
+
+<ResponseField name="verifyUrl" type="string" required>
+  URL for users to verify the code in their browser
+</ResponseField>
+
+<ResponseField name="expiresAt" type="string" required>
+  ISO 8601 timestamp when the code expires (10 minutes)
+</ResponseField>
+
+#### Step 2: Poll for Confirmation
+
+Poll the status endpoint while the user verifies the code:
+
+```bash GET /api/auth/device-code/:code
+curl https://api.entendi.dev/api/auth/device-code/A8K3JN7M
+```
+
+**Response (pending):**
+
+```json
+{
+  "status": "pending"
+}
+```
+
+**Response (confirmed):**
+
+```json
+{
+  "status": "confirmed",
+  "apiKey": "ent_1234567890abcdef"
+}
+```
+
+**Response (expired):**
+
+```json
+{
+  "status": "expired"
+}
+```
+
+<ResponseField name="status" type="string" required>
+  One of: `pending`, `confirmed`, `expired`
+</ResponseField>
+
+<ResponseField name="apiKey" type="string">
+  API key for authenticated requests (only present when status is `confirmed`). The device code is deleted after retrieval (single-use).
+</ResponseField>
+
+#### Step 3: User Confirms in Browser
+
+The user visits the `verifyUrl` while authenticated and confirms the device code.
+
+```bash POST /api/auth/device-code/:code/confirm
+# Requires user authentication (session or API key)
+curl -X POST https://api.entendi.dev/api/auth/device-code/A8K3JN7M/confirm \
+  -H "Cookie: better-auth.session_token=..."
+```
+
+**Response:**
+
+```json
+{
+  "status": "confirmed"
+}
+```
+
+**Error Responses:**
+
+```json
+{
+  "error": "Device code not found"
+}
+```
+
+```json
+{
+  "error": "Device code already used or expired"
+}
+```
+
+```json
+{
+  "error": "Device code expired"
+}
+```
+
+## Authentication Errors
+
+All authenticated endpoints return `401 Unauthorized` if no valid session or API key is provided:
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+API key rate limits return `429 Too Many Requests`:
+
+```json
+{
+  "error": "API key rate limit exceeded"
+}
+```
+
+## Current User
+
+Retrieve the currently authenticated user:
+
+```bash GET /api/me
+curl https://api.entendi.dev/api/me \
+  -H "x-api-key: your_api_key_here"
+```
+
+**Response:**
+
+```json
+{
+  "user": {
+    "id": "usr_abc123",
+    "name": "Alex Chen",
+    "email": "alex@example.com"
+  }
+}
+```
+
+<ResponseField name="user.id" type="string" required>
+  Unique user identifier
+</ResponseField>
+
+<ResponseField name="user.name" type="string" required>
+  User's display name
+</ResponseField>
+
+<ResponseField name="user.email" type="string" required>
+  User's email address
+</ResponseField>
